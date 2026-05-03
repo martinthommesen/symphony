@@ -123,10 +123,13 @@ defmodule SymphonyElixir.Observability.Control do
   def extract_bearer(_), do: nil
 
   @doc """
-  Indicates whether mutation requires a token even on loopback. Always true
-  unless the configured server host is loopback. (Mutating endpoints
-  *always* require a token in this implementation; this helper exists so
-  callers can decide whether to allow read endpoints to skip auth.)
+  Returns `true` when the configured server host is a loopback address
+  (`127.0.0.1`, `localhost`, or `::1`), `false` otherwise. Defaults to
+  `true` if the configuration cannot be loaded.
+
+  Note: mutating endpoints **always** require a token in this
+  implementation regardless of host. This helper exists so callers can
+  decide whether to allow *read* endpoints to skip auth on loopback.
   """
   @spec loopback_only?() :: boolean()
   def loopback_only? do

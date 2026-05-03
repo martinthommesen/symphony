@@ -37,6 +37,12 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
     });
   }
 
+  // We need to refer to `server.port` from inside the `fetch` handler
+  // (so /health reports the actual bound port, not the pre-bind option).
+  // `serve()` doesn't accept a forward reference, so we create the
+  // server first and then read its port lazily via the closure.
+  let boundPort = port;
+
   const server = serve({
     port,
     fetch(req) {
@@ -47,7 +53,7 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
           status: "ok",
           version: "0.1.0",
           repo: "fake/repo",
-          server: { host: "127.0.0.1", port },
+          server: { host: "127.0.0.1", port: boundPort },
           capabilities: {
             control: !!controlToken,
             events_stream: true,
@@ -105,13 +111,22 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
       }
 
       if (url.pathname === "/api/v1/events/stream") {
+        // The `cancel(reason)` callback receives a cancellation reason,
+        // not the controller, so we capture the controller in a closure
+        // via `start()` and remove it explicitly when the consumer
+        // disconnects. The previous form silently leaked entries.
+        let captured: ReadableStreamDefaultController<Uint8Array> | null = null;
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
+            captured = controller;
             subscribers.add(controller);
             controller.enqueue(enc.encode(":connected\n\n"));
           },
-          cancel(controller) {
-            subscribers.delete(controller as unknown as ReadableStreamDefaultController<Uint8Array>);
+          cancel() {
+            if (captured !== null) {
+              subscribers.delete(captured);
+              captured = null;
+            }
           },
         });
         return new Response(stream, {
@@ -137,6 +152,10 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
       return new Response("not found", { status: 404 });
     },
   });
+
+  // Now that the server is bound, capture the actual port so /health
+  // reports the runtime value rather than the pre-bind option.
+  boundPort = server.port ?? port;
 
   function pushEvent(event: Record<string, unknown>): void {
     events.push(event);

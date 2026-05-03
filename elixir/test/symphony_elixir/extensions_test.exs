@@ -341,12 +341,23 @@ defmodule SymphonyElixir.ExtensionsTest do
     state_payload = json_response(conn, 200)
 
     # Legacy fields must continue to round-trip exactly. New cockpit fields
-    # (status, polling, agent_capacity, tokens, recent_events) may also be
-    # present but are checked separately to keep this assertion stable as
-    # the cockpit evolves.
-    legacy_keys = ["generated_at", "counts", "running", "retrying", "codex_totals", "rate_limits"]
+    # (status, polling, agent_capacity, tokens, recent_events,
+    # runtime_seconds on running entries) may also be present but are
+    # checked separately so this assertion stays stable as the cockpit
+    # evolves.
+    legacy_top_keys = ["generated_at", "counts", "running", "retrying", "codex_totals", "rate_limits"]
 
-    assert Map.take(state_payload, legacy_keys) == %{
+    legacy_running_entry_keys =
+      ~w(issue_id issue_identifier state worker_host workspace_path session_id turn_count last_event last_message started_at last_event_at tokens)
+
+    actual_legacy_top = Map.take(state_payload, legacy_top_keys)
+
+    actual_legacy_running =
+      Enum.map(actual_legacy_top["running"], &Map.take(&1, legacy_running_entry_keys))
+
+    actual_for_compare = Map.put(actual_legacy_top, "running", actual_legacy_running)
+
+    assert actual_for_compare == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{
                "running" => 1,
@@ -356,21 +367,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "blocked" => state_payload["counts"]["blocked"]
              },
              "running" => [
-               Map.take(List.first(state_payload["running"]), [
-                 "issue_id",
-                 "issue_identifier",
-                 "state",
-                 "worker_host",
-                 "workspace_path",
-                 "session_id",
-                 "turn_count",
-                 "last_event",
-                 "last_message",
-                 "started_at",
-                 "last_event_at",
-                 "tokens"
-               ])
-               |> Map.merge(%{
+               %{
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
@@ -383,7 +380,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "started_at" => List.first(state_payload["running"])["started_at"],
                  "last_event_at" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-               })
+               }
              ],
              "retrying" => [
                %{
