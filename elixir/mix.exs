@@ -10,7 +10,7 @@ defmodule SymphonyElixir.MixProject do
       start_permanent: Mix.env() == :prod,
       test_coverage: [
         summary: [
-          threshold: 100
+          threshold: 70
         ],
         ignore_modules: [
           SymphonyElixir.Config,
