@@ -122,8 +122,26 @@ defmodule SymphonyElixir.GitHub.Adapter do
     with {:ok, repo} <- repo_setting() do
       tracker = tracker_settings()
 
+      # Open issues are gated by the trigger labels (`active_labels`,
+      # typically `[symphony]`). Closed issues, on the other hand, no
+      # longer carry the trigger label — what marks them as
+      # Symphony-managed is the *state* labels Symphony stamped on
+      # them (running/review/failed/done + blocked). Querying closed
+      # issues by `active_labels` would silently miss every finished
+      # run.
+      closed_label_filter =
+        [
+          tracker.running_label,
+          tracker.review_label,
+          tracker.failed_label,
+          tracker.done_label
+        ]
+        |> Enum.concat(List.wrap(tracker.blocked_labels))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
       with {:ok, open_issues} <- list_open_issues_with_label(repo, tracker.active_labels),
-           {:ok, closed_issues} <- list_closed_issues(repo, List.wrap(tracker.active_labels)) do
+           {:ok, closed_issues} <- list_closed_issues(repo, closed_label_filter) do
         managed =
           (open_issues ++ closed_issues)
           |> Enum.map(fn issue ->

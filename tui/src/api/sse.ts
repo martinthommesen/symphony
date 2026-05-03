@@ -8,6 +8,11 @@ import { parseEvent } from "./schema.ts";
 import type { EventPayload } from "./types.ts";
 import { redactDeep } from "../redaction/redact.ts";
 
+/** Maximum number of recently-seen event ids retained for de-duplication. */
+const MAX_SEEN_IDS = 5_000;
+/** How many of the oldest dedupe ids to evict once `MAX_SEEN_IDS` is exceeded. */
+const SEEN_IDS_EVICTION_CHUNK = 1_000;
+
 export type SseStatus =
   | "connecting"
   | "connected"
@@ -167,10 +172,12 @@ export class SseClient {
     if (id) {
       this.seen.add(id);
       this.lastEventId = id;
-      // Cap dedupe set size so it cannot grow unboundedly.
-      if (this.seen.size > 5_000) {
+      // Cap dedupe set size so it cannot grow unboundedly. When the
+      // cap is hit, evict the oldest `SEEN_IDS_EVICTION_CHUNK` entries
+      // in one pass — amortises the eviction cost over many adds.
+      if (this.seen.size > MAX_SEEN_IDS) {
         const iter = this.seen.values();
-        for (let i = 0; i < 1_000; i++) {
+        for (let i = 0; i < SEEN_IDS_EVICTION_CHUNK; i++) {
           const next = iter.next();
           if (next.done) break;
           this.seen.delete(next.value);

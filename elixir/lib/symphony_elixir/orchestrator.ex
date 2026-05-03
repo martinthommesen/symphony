@@ -15,6 +15,9 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  # Default GenServer.call deadline for orchestrator commands fired by
+  # the cockpit. Snapshot uses its own larger deadline.
+  @default_call_timeout_ms 5_000
   @empty_codex_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -1104,7 +1107,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @spec request_refresh(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
-  def request_refresh(server, timeout \\ 5_000) do
+  def request_refresh(server, timeout \\ @default_call_timeout_ms) do
     if alive?(server) do
       try do
         GenServer.call(server, :request_refresh, timeout)
@@ -1169,7 +1172,7 @@ defmodule SymphonyElixir.Orchestrator do
     safe_call(server, {:retry_issue, identifier_or_id})
   end
 
-  defp safe_call(server, message, timeout \\ 5_000) do
+  defp safe_call(server, message, timeout \\ @default_call_timeout_ms) do
     if alive?(server) do
       try do
         case GenServer.call(server, message, timeout) do

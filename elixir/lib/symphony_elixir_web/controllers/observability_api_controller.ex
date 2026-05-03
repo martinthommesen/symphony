@@ -12,6 +12,9 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   require Logger
 
   @sse_heartbeat_interval_ms 20_000
+  # Wake the SSE loop if no event/heartbeat lands within this window so
+  # we can re-emit a comment and detect dropped clients.
+  @sse_idle_timeout_ms 30_000
   @sse_query_timeout_ms 2_000
   # Mailbox length thresholds for slow-consumer protection. PubSub
   # `send/2` to a wedged SSE pid never drops, so without backpressure a
@@ -188,7 +191,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
           _other ->
             sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms)
         after
-          30_000 ->
+          @sse_idle_timeout_ms ->
             case send_comment(conn, "idle:dropped=#{dropped}") do
               {:ok, conn} -> sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms)
               {:error, _reason} -> finish_sse(conn, heartbeat_ref)
