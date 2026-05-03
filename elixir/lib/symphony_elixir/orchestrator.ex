@@ -1188,12 +1188,17 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  # `GenServer.server()` accepts atom names, pids, or `{name, node}` tuples.
-  # `Process.whereis/1` raises on the latter two, so we route via
-  # `GenServer.whereis/1` which handles every variant.
+  # `GenServer.whereis/1` returns one of:
+  #   * `pid()` — local server
+  #   * `{name, node}` — remote server reachable via dist
+  #   * `nil` — not registered anywhere
+  # We treat both pid and tuple as "alive" so endpoints configured with
+  # a `{name, node}` orchestrator reference don't short-circuit to
+  # `:unavailable` when the remote GenServer is reachable.
   defp alive?(server) do
     case GenServer.whereis(server) do
       pid when is_pid(pid) -> true
+      {name, node} when is_atom(name) and is_atom(node) -> true
       _ -> false
     end
   end

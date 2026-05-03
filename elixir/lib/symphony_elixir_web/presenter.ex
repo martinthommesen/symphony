@@ -99,10 +99,16 @@ defmodule SymphonyElixirWeb.Presenter do
 
     control_enabled = Control.control_enabled?()
 
-    # `orchestrator` may be an atom, a pid, or a `{name, node}` tuple
-    # (when the endpoint is configured for tests). `Process.whereis/1`
-    # raises on the latter two, so route through `GenServer.whereis/1`.
-    orchestrator_alive = is_pid(GenServer.whereis(orchestrator))
+    # `orchestrator` may be an atom name, a pid, or a `{name, node}`
+    # tuple when the endpoint targets a remote GenServer. Treat all
+    # three as "alive" so a remote orchestrator doesn't silently report
+    # `status: degraded` and `orchestrator.available: false` to clients.
+    orchestrator_alive =
+      case GenServer.whereis(orchestrator) do
+        pid when is_pid(pid) -> true
+        {name, node} when is_atom(name) and is_atom(node) -> true
+        _ -> false
+      end
 
     %{
       status: if(orchestrator_alive, do: "ok", else: "degraded"),
