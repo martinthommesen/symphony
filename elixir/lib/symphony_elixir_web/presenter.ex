@@ -381,6 +381,16 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  # Prefer the tracker-supplied `branch_name` (Linear populates this from
+  # GraphQL; the GitHub `Issue.to_linear_issue/2` shim sets a synthesized
+  # value when none is supplied). Only fall back to a numeric synthesis
+  # when no `branch_name` exists and the id is a positive integer (i.e.
+  # the GitHub case). UUID-like Linear ids must NOT be turned into a
+  # bogus `symphony/issue-...` branch — that would mislead operators.
+  defp issue_branch_name(%TrackerIssue{branch_name: branch})
+       when is_binary(branch) and branch != "",
+       do: branch
+
   defp issue_branch_name(%TrackerIssue{id: id}) when is_binary(id) do
     case parse_issue_number(id) do
       n when is_integer(n) -> "symphony/issue-#{n}"
