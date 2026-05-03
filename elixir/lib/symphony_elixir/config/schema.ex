@@ -45,13 +45,21 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
 
     embedded_schema do
-      field(:kind, :string)
+      field(:kind, :string, default: "github")
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      field(:repo, :string)
+      field(:active_labels, {:array, :string}, default: ["symphony"])
+      field(:blocked_labels, {:array, :string}, default: ["symphony/blocked"])
+      field(:running_label, :string, default: "symphony/running")
+      field(:done_label, :string, default: "symphony/done")
+      field(:failed_label, :string, default: "symphony/failed")
+      field(:review_label, :string, default: "symphony/review")
+      field(:retry_failed, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -59,7 +67,23 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [
+          :kind,
+          :endpoint,
+          :api_key,
+          :project_slug,
+          :assignee,
+          :active_states,
+          :terminal_states,
+          :repo,
+          :active_labels,
+          :blocked_labels,
+          :running_label,
+          :done_label,
+          :failed_label,
+          :review_label,
+          :retry_failed
+        ],
         empty_values: []
       )
     end
@@ -199,6 +223,83 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Copilot do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:command, :string, default: "copilot")
+      field(:mode, :string, default: "autopilot")
+      field(:permission_mode, :string, default: "yolo")
+      field(:no_ask_user, :boolean, default: true)
+      field(:output_format, :string, default: "json")
+      field(:max_autopilot_continues, :integer, default: 10)
+      field(:turn_timeout_ms, :integer, default: 3_600_000)
+      field(:read_timeout_ms, :integer, default: 5_000)
+      field(:stall_timeout_ms, :integer, default: 300_000)
+
+      field(:deny_tools, {:array, :string},
+        default: ["shell(git push)", "shell(gh pr)", "shell(gh issue)"]
+      )
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :command,
+          :mode,
+          :permission_mode,
+          :no_ask_user,
+          :output_format,
+          :max_autopilot_continues,
+          :turn_timeout_ms,
+          :read_timeout_ms,
+          :stall_timeout_ms,
+          :deny_tools
+        ],
+        empty_values: []
+      )
+      |> validate_required([:command])
+      |> validate_inclusion(:mode, ["autopilot", "acp"])
+      |> validate_inclusion(:permission_mode, ["yolo", "ask", "restricted"])
+      |> validate_inclusion(:output_format, ["json", "text"])
+      |> validate_number(:max_autopilot_continues, greater_than: 0)
+      |> validate_number(:turn_timeout_ms, greater_than: 0)
+      |> validate_number(:read_timeout_ms, greater_than: 0)
+      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+    end
+  end
+
+  defmodule Finalizer do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:auto_commit_uncommitted, :boolean, default: true)
+      field(:push_branch, :boolean, default: true)
+      field(:open_pr, :boolean, default: true)
+      field(:close_issue, :boolean, default: false)
+      field(:merge_pr, :boolean, default: false)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [:auto_commit_uncommitted, :push_branch, :open_pr, :close_issue, :merge_pr],
+        empty_values: []
+      )
+    end
+  end
+
   defmodule Hooks do
     @moduledoc false
     use Ecto.Schema
@@ -268,6 +369,8 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
     embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:copilot, Copilot, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:finalizer, Finalizer, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
@@ -360,6 +463,8 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
     |> cast_embed(:codex, with: &Codex.changeset/2)
+    |> cast_embed(:copilot, with: &Copilot.changeset/2)
+    |> cast_embed(:finalizer, with: &Finalizer.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)

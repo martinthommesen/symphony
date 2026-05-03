@@ -1,4 +1,4 @@
-.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e
+.PHONY: help all setup deps build fmt fmt-check lint test coverage ci dialyzer e2e e2e-github
 
 MIX ?= mix
 
@@ -35,6 +35,9 @@ dialyzer:
 
 e2e:
 	SYMPHONY_RUN_LIVE_E2E=1 $(MIX) test test/symphony_elixir/live_e2e_test.exs
+
+e2e-github:
+	SYMPHONY_RUN_LIVE_GITHUB_E2E=1 $(MIX) test test/symphony_elixir/live_github_e2e_test.exs
 
 ci:
 	$(MAKE) setup
