@@ -1,9 +1,9 @@
 ---
 name: debug
 description:
-  Investigate stuck runs and execution failures by tracing Symphony and Codex
-  logs with issue/session identifiers; use when runs stall, retry repeatedly, or
-  fail unexpectedly.
+  Investigate stuck runs and execution failures by tracing Symphony and agent
+  session logs with issue/session identifiers; use when runs stall, retry
+  repeatedly, or fail unexpectedly.
 ---
 
 # Debug
@@ -11,22 +11,31 @@ description:
 ## Goals
 
 - Find why a run is stuck, retrying, or failing.
-- Correlate Linear issue identity to a Codex session quickly.
+- Correlate Linear issue identity to an agent session quickly.
 - Read the right logs in the right order to isolate root cause.
 
 ## Log Sources
 
+Symphony orchestrates agent sessions for both Codex CLI and Copilot CLI. Both
+produce the same log format — the log prefix `Codex session` appears regardless
+of which CLI triggered the run.
+
 - Primary runtime log: `log/symphony.log`
   - Default comes from `SymphonyElixir.LogFile` (`log/symphony.log`).
-  - Includes orchestrator, agent runner, and Codex app-server lifecycle logs.
+  - Includes orchestrator, agent runner, and app-server lifecycle logs.
+  - Covers sessions triggered by either Codex CLI or Copilot CLI.
 - Rotated runtime logs: `log/symphony.log*`
   - Check these when the relevant run is older.
+- Copilot CLI session logs: Copilot CLI writes its own diagnostics to
+  `~/.copilot/logs/` (or the path shown by `gh copilot diagnostics`). Check
+  these for client-side errors that never reach Symphony (e.g., connection
+  failures, auth issues, hook errors).
 
 ## Correlation Keys
 
 - `issue_identifier`: human ticket key (example: `MT-625`)
 - `issue_id`: Linear UUID (stable internal ID)
-- `session_id`: Codex thread-turn pair (`<thread_id>-<turn_id>`)
+- `session_id`: agent thread-turn pair (`<thread_id>-<turn_id>`)
 
 `elixir/docs/logging.md` requires these fields for issue/session lifecycle logs. Use
 them as your join keys during debugging.
@@ -83,10 +92,12 @@ rg -n "Issue stalled|scheduling retry|turn_timeout|turn_failed|Codex session fai
       `session_id`.
     - Record probable root cause and the exact failing stage.
 
-## Reading Codex Session Logs
+## Reading Agent Session Logs
 
-In Symphony, Codex session diagnostics are emitted into `log/symphony.log` and
-keyed by `session_id`. Read them as a lifecycle:
+Symphony emits agent session diagnostics into `log/symphony.log`, keyed by
+`session_id`. The log prefix `Codex session` is used for all sessions regardless
+of whether the run was triggered by Codex CLI or Copilot CLI. Read them as a
+lifecycle:
 
 1. `Codex session started ... session_id=...`
 2. Session stream/lifecycle events for the same `session_id`
@@ -116,3 +127,16 @@ concurrent runs.
 - Check rotated logs (`log/symphony.log*`) before concluding data is missing.
 - If required context fields are missing in new log statements, align with
   `elixir/docs/logging.md` conventions.
+
+## Copilot CLI Troubleshooting
+
+When a Copilot CLI session fails but Symphony logs show no matching
+`session_id`, the problem is likely client-side:
+
+- Check Copilot CLI logs (`~/.copilot/logs/` or `gh copilot diagnostics`).
+- Verify the `sessionStart` hook ran: look for `bash .agents/init.sh` output
+  in the session log.
+- Confirm `gh auth status` succeeds — token or scope issues prevent the session
+  from reaching Symphony.
+- Skill loading issues: confirm `.agents/skills/` is present and each skill
+  directory contains a `SKILL.md` with valid YAML frontmatter.

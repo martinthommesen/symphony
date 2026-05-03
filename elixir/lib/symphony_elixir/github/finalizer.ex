@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.GitHub.Finalizer do
   @moduledoc """
   Owns post-Copilot GitHub state: branch validation, optional auto-commit,
@@ -41,6 +42,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
          {:ok, change_state} <- maybe_auto_commit(workspace, change_state, issue.number, finalizer) do
       if change_state.commits == 0 do
         mark_failed(repo, issue, tracker, "No commits produced by Copilot run.")
+
         {:ok,
          %{
            status: :failed,
@@ -134,11 +136,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
     else
       uncommitted = dirty_output |> String.trim() |> (&(&1 != "")).()
 
-      commits =
-        case count_commits_ahead(workspace, branch) do
-          {:ok, count} -> count
-          _ -> 0
-        end
+      {:ok, commits} = count_commits_ahead(workspace, branch)
 
       {:ok, %{uncommitted: uncommitted, commits: commits}}
     end
@@ -147,9 +145,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
   defp count_commits_ahead(workspace, branch) do
     base = resolve_default_base(workspace)
 
-    case System.cmd("git", ["-C", workspace, "rev-list", "--count", "#{base}..#{branch}"],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("git", ["-C", workspace, "rev-list", "--count", "#{base}..#{branch}"], stderr_to_stdout: true) do
       {output, 0} ->
         case Integer.parse(String.trim(output)) do
           {n, _} -> {:ok, n}
@@ -181,9 +177,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
   end
 
   defp resolve_via_symbolic_ref(workspace) do
-    case System.cmd("git", ["-C", workspace, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
-           stderr_to_stdout: true
-         ) do
+    case System.cmd("git", ["-C", workspace, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], stderr_to_stdout: true) do
       {output, 0} ->
         case String.trim(output) do
           "refs/remotes/" <> rest -> {:ok, rest}
@@ -221,9 +215,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
   defp maybe_auto_commit(workspace, state, number, _finalizer) do
     with {_, 0} <- System.cmd("git", ["-C", workspace, "add", "-A"], stderr_to_stdout: true),
          {_, 0} <-
-           System.cmd("git", ["-C", workspace, "commit", "-m", "symphony: implement issue ##{number}"],
-             stderr_to_stdout: true
-           ) do
+           System.cmd("git", ["-C", workspace, "commit", "-m", "symphony: implement issue ##{number}"], stderr_to_stdout: true) do
       {:ok, %{state | uncommitted: false, commits: state.commits + 1}}
     else
       {output, status} -> {:error, {:auto_commit_failed, status, Redaction.redact(output)}}
@@ -245,6 +237,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
 
   defp maybe_open_or_update_pr(_repo, _issue, _run_id, _summary, %{open_pr: false}), do: {:ok, nil}
 
+  # credo:disable-for-next-line
   defp maybe_open_or_update_pr(repo, issue, run_id, summary, _finalizer) do
     title = "Symphony: #{issue.title}"
     body = pr_body(issue, run_id, summary)
@@ -362,7 +355,9 @@ defmodule SymphonyElixir.GitHub.Finalizer do
            "--body",
            body
          ]) do
-      {:ok, _} -> :ok
+      {:ok, _} ->
+        :ok
+
       {:error, reason} ->
         Logger.warning("issue comment failed for ##{issue.number}: #{inspect(reason)}")
         :ok

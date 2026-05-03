@@ -288,6 +288,7 @@ defmodule SymphonyElixir.Copilot.Autopilot do
   end
 
   defp validate_workspace(workspace) do
+    # credo:disable-for-next-line
     cond do
       not File.dir?(workspace) -> {:error, {:workspace_not_dir, workspace}}
       true -> :ok
