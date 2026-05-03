@@ -135,11 +135,20 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
       }
 
       if (url.pathname.startsWith("/api/v1/control/")) {
+        if (!controlToken) {
+          return jsonResponse(
+            { ok: false, error: { code: "control_disabled", message: "no token" } },
+            403,
+          );
+        }
         if (!authorized(req.headers)) {
-          if (!controlToken) {
-            return jsonResponse({ ok: false, error: { code: "control_disabled", message: "no token" } }, 403);
-          }
-          return jsonResponse({ ok: false, error: { code: "missing_token", message: "no token" } }, 401);
+          // Match the real Phoenix controller: distinguish a missing
+          // Authorization header from a present-but-wrong one so
+          // integration tests can assert the right error code.
+          const presented = req.headers.get("authorization");
+          const code = presented ? "invalid_token" : "missing_token";
+          const message = presented ? "Invalid bearer token" : "Authorization: Bearer <token> required";
+          return jsonResponse({ ok: false, error: { code, message } }, 401);
         }
         const command = url.pathname.split("/").pop() ?? "";
         return jsonResponse({ ok: true, command, payload: { status: "accepted" } });

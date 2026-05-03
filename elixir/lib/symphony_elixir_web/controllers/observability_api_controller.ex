@@ -5,8 +5,6 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
   use Phoenix.Controller, formats: [:json]
 
-  require Logger
-
   alias Plug.Conn
   alias SymphonyElixir.Observability.{Control, Event, EventStore}
   alias SymphonyElixirWeb.{Endpoint, Presenter}

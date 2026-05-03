@@ -24,14 +24,19 @@ async function main(): Promise<void> {
 
   const adapter = new OpenTuiAdapter();
 
+  // The SSE client's callbacks reference `app`, so declare `app` first
+  // and feed the constructed SseClient into it afterwards. This avoids
+  // a TDZ / use-before-declaration error when the SSE callbacks fire.
+  let app!: App;
+
   const sse = new SseClient({
     baseUrl: config.apiUrl,
     controlToken: config.controlToken,
-    onEvent: (event) => app.ingestEvent(event),
-    onStatus: (status, info) => app.setSseStatus(status, info),
+    onEvent: (event) => app?.ingestEvent(event),
+    onStatus: (status, info) => app?.setSseStatus(status, info),
   });
 
-  const app = new App({ client, sse, adapter, config });
+  app = new App({ client, sse, adapter, config });
 
   process.on("SIGINT", () => void app.stop().then(() => process.exit(0)));
   process.on("SIGTERM", () => void app.stop().then(() => process.exit(0)));

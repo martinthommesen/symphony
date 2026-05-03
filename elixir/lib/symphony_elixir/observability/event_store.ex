@@ -465,24 +465,33 @@ defmodule SymphonyElixir.Observability.EventStore do
   defp normalize_filters(filters) when is_list(filters), do: normalize_filters(Map.new(filters))
 
   defp normalize_filters(filters) when is_map(filters) do
-    filters
-    |> Enum.reduce(%{}, fn
-      {_k, nil}, acc ->
-        acc
-
-      {_k, ""}, acc ->
-        acc
-
-      {k, v}, acc when is_atom(k) ->
-        Map.put(acc, k, v)
-
-      {k, v}, acc when is_binary(k) ->
-        Map.put(acc, String.to_existing_atom(k), v)
-
-      _, acc ->
-        acc
+    # Whitelist of keys the store actually understands. We allow callers
+    # to pass either atom or string keys but never mint new atoms — also
+    # never drop *all* filters because of one bad key (which the previous
+    # `String.to_existing_atom/1 + rescue ArgumentError -> %{}` did).
+    Enum.reduce(filters, %{}, fn entry, acc ->
+      case normalize_filter_entry(entry) do
+        {key, value} -> Map.put(acc, key, value)
+        :skip -> acc
+      end
     end)
-  rescue
-    ArgumentError -> %{}
   end
+
+  @known_filter_keys [:type, :issue_identifier, :issue_id, :session_id, :severity, :since, :limit]
+  @known_filter_strings ["type", "issue_identifier", "issue_id", "session_id", "severity", "since", "limit"]
+
+  defp normalize_filter_entry({_k, nil}), do: :skip
+  defp normalize_filter_entry({_k, ""}), do: :skip
+
+  defp normalize_filter_entry({k, v}) when is_atom(k) do
+    if k in @known_filter_keys, do: {k, v}, else: :skip
+  end
+
+  defp normalize_filter_entry({k, v}) when is_binary(k) do
+    if k in @known_filter_strings,
+      do: {String.to_existing_atom(k), v},
+      else: :skip
+  end
+
+  defp normalize_filter_entry(_), do: :skip
 end
