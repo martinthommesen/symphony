@@ -341,7 +341,7 @@ defmodule SymphonyElixir.Observability.EventStore do
 
   defp trim_to_buffer_size(state), do: state
 
-  defp load_recent_lines(path, size) when is_integer(size) and size > 0 do
+  defp load_recent_lines(path, size) when is_binary(path) and is_integer(size) and size > 0 do
     # Stream the JSONL file line-by-line and keep only the last `size`
     # items in a bounded queue. This is O(size) memory regardless of
     # total file size — long-running deployments can accumulate very
