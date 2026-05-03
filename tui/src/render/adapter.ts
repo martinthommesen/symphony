@@ -112,13 +112,19 @@ export const NO_COLOR_THEME: Theme = {
 };
 
 /** Builds a frame from a list of rows of spans. Pads to width and truncates. */
+/**
+ * Build a frame from `rows`. Truncates spans that overflow `width` and
+ * pads short rows out with a trailing space span so the renderer can
+ * blit an entire `width × height` rectangle without leaving stale
+ * characters from the previous frame visible.
+ */
 export function buildFrame(rows: CellSpan[][], width: number, height: number, options: { footer?: string; modal?: string | null } = {}): Frame {
-  const padded = rows.slice(0, height).map((row) => trimRow(row, width));
-  while (padded.length < height) padded.push([]);
+  const padded = rows.slice(0, height).map((row) => trimAndPadRow(row, width));
+  while (padded.length < height) padded.push(padToWidth([], width));
   return { width, height, rows: padded, footer: options.footer, modal: options.modal ?? null };
 }
 
-function trimRow(row: CellSpan[], width: number): CellSpan[] {
+function trimAndPadRow(row: CellSpan[], width: number): CellSpan[] {
   let used = 0;
   const out: CellSpan[] = [];
   for (const span of row) {
@@ -133,7 +139,19 @@ function trimRow(row: CellSpan[], width: number): CellSpan[] {
       break;
     }
   }
-  return out;
+  return padToWidth(out, width, used);
+}
+
+function padToWidth(spans: CellSpan[], width: number, used = spansLength(spans)): CellSpan[] {
+  if (used >= width) return spans;
+  const padding = " ".repeat(width - used);
+  return [...spans, { text: padding }];
+}
+
+function spansLength(spans: CellSpan[]): number {
+  let n = 0;
+  for (const span of spans) n += span.text.length;
+  return n;
 }
 
 export function spansToText(spans: CellSpan[]): string {

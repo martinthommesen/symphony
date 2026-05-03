@@ -137,6 +137,10 @@ export class OpenTuiAdapter implements RenderAdapter {
 
   resize(width: number, height: number): void {
     this.currentSize = { width, height };
+    // Match `StubAdapter.resize()` and the `RenderAdapter` contract:
+    // listeners must observe explicit resize() calls just like real
+    // terminal resize events.
+    for (const listener of this.resizeListeners) listener({ width, height });
   }
 
   on(event: "key", listener: Listener<KeyEvent>): void;

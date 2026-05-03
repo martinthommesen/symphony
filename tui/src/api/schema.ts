@@ -12,8 +12,11 @@ import type {
   HealthPayload,
   IssueProjection,
   IssuesListPayload,
+  RetryEntry,
+  RunningEntry,
   Severity,
   StatePayload,
+  TokenTotals,
 } from "./types.ts";
 
 const SEVERITIES: ReadonlyArray<Severity> = ["debug", "info", "warning", "error"];
@@ -145,6 +148,40 @@ export function parseIssuesList(value: unknown): IssuesListPayload {
   };
 }
 
+export function parseRunningEntry(value: unknown): RunningEntry | null {
+  const obj = asObject(value);
+  if (!obj) return null;
+  return {
+    issue_id: asNullableString(obj.issue_id) ?? undefined,
+    issue_identifier: asNullableString(obj.issue_identifier) ?? undefined,
+    state: asNullableString(obj.state) ?? undefined,
+    worker_host: asNullableString(obj.worker_host),
+    workspace_path: asNullableString(obj.workspace_path),
+    session_id: asNullableString(obj.session_id),
+    turn_count: asNullableNumber(obj.turn_count) ?? undefined,
+    last_event: asNullableString(obj.last_event),
+    last_message: asNullableString(obj.last_message),
+    started_at: asNullableString(obj.started_at),
+    last_event_at: asNullableString(obj.last_event_at),
+    runtime_seconds: asNullableNumber(obj.runtime_seconds) ?? undefined,
+    tokens: (asObject(obj.tokens) ?? undefined) as TokenTotals | undefined,
+  };
+}
+
+export function parseRetryEntry(value: unknown): RetryEntry | null {
+  const obj = asObject(value);
+  if (!obj) return null;
+  return {
+    issue_id: asNullableString(obj.issue_id) ?? undefined,
+    issue_identifier: asNullableString(obj.issue_identifier) ?? undefined,
+    attempt: asNullableNumber(obj.attempt) ?? undefined,
+    due_at: asNullableString(obj.due_at),
+    error: asNullableString(obj.error),
+    worker_host: asNullableString(obj.worker_host),
+    workspace_path: asNullableString(obj.workspace_path),
+  };
+}
+
 export function parseState(value: unknown): StatePayload {
   const obj = asObject(value) ?? {};
 
@@ -152,8 +189,12 @@ export function parseState(value: unknown): StatePayload {
     generated_at: asString(obj.generated_at, ""),
     status: asNullableString(obj.status) ?? "unknown",
     counts: (asObject(obj.counts) ?? {}) as Record<string, number>,
-    running: asArray(obj.running).map((entry) => entry as Record<string, unknown>) as never,
-    retrying: asArray(obj.retrying).map((entry) => entry as Record<string, unknown>) as never,
+    running: asArray(obj.running)
+      .map(parseRunningEntry)
+      .filter((entry): entry is RunningEntry => entry !== null),
+    retrying: asArray(obj.retrying)
+      .map(parseRetryEntry)
+      .filter((entry): entry is RetryEntry => entry !== null),
     codex_totals: asObject(obj.codex_totals) ?? {},
     rate_limits: obj.rate_limits ?? null,
     polling: asObject(obj.polling) ?? {},

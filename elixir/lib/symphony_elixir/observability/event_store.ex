@@ -38,8 +38,18 @@ defmodule SymphonyElixir.Observability.EventStore do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    name = Keyword.get(opts, :name, __MODULE__)
-    GenServer.start_link(__MODULE__, opts, name: name)
+    case Keyword.fetch(opts, :name) do
+      {:ok, false} ->
+        # Anonymous instance (used by tests that want to avoid registering
+        # a global name). Caller is expected to keep the pid.
+        GenServer.start_link(__MODULE__, opts)
+
+      {:ok, name} ->
+        GenServer.start_link(__MODULE__, opts, name: name)
+
+      :error ->
+        GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    end
   end
 
   @doc """
