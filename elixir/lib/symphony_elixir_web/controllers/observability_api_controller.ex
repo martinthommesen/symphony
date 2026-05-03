@@ -113,7 +113,6 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
     case EventStore.subscribe() do
       :ok -> :ok
-      {:ok, _} -> :ok
       _ -> :ok
     end
 

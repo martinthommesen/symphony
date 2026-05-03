@@ -1591,7 +1591,7 @@ defmodule SymphonyElixir.Orchestrator do
       data: %{
         codex_event: codex_event_to_string(event_atom),
         turn_count: Map.get(running_entry, :turn_count, 0),
-        token_delta: token_delta || %{}
+        token_delta: token_delta
       }
     })
 

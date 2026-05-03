@@ -257,8 +257,6 @@ defmodule SymphonyElixir.Observability.Control do
     |> Map.new()
   end
 
-  defp redact_params(_), do: %{}
-
   # Plug.Crypto.secure_compare/2 is provided by `:plug_crypto`, which
   # Phoenix already pulls into the dep tree. We fall back to a pure-Elixir
   # constant-time comparison for non-Phoenix test contexts.

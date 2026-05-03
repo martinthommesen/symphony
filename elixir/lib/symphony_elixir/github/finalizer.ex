@@ -136,11 +136,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
     else
       uncommitted = dirty_output |> String.trim() |> (&(&1 != "")).()
 
-      commits =
-        case count_commits_ahead(workspace, branch) do
-          {:ok, count} -> count
-          _ -> 0
-        end
+      {:ok, commits} = count_commits_ahead(workspace, branch)
 
       {:ok, %{uncommitted: uncommitted, commits: commits}}
     end

@@ -351,7 +351,7 @@ defmodule SymphonyElixir.Observability.EventStore do
     try do
       tail_queue =
         path
-        |> File.stream!([], :line)
+        |> File.stream!([:read], :line)
         |> Enum.reduce(:queue.new(), fn line, queue ->
           queue = :queue.in(line, queue)
 
