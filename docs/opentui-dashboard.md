@@ -111,17 +111,29 @@ These do not break the existing `/api/v1/state`, `/api/v1/refresh`, or
 
 ### Authentication
 
-- `GET` observability endpoints are loopback-readable.
-- `POST /api/v1/control/*` requires `Authorization: Bearer <token>`.
+- `GET /api/v1/health` is the **only** public route — capability
+  discovery, monitoring, and readiness probes work without a token.
+- Every other route under `/api/v1/*` (state, issues, events, SSE
+  stream, analytics, refresh, control/*) goes through the
+  `RequireBearer` plug:
+  - **Token configured:** any request must carry a matching
+    `Authorization: Bearer <token>` header. Missing → `401
+    missing_token`. Wrong → `401 invalid_token`.
+  - **No token configured + loopback bind:** requests are accepted
+    (read-only convenience for local dev). The TUI also surfaces this
+    posture via `/api/v1/health.capabilities.read_only`.
+  - **No token configured + non-loopback bind:** every gated route
+    returns `403 control_disabled` with an `Observability and control
+    endpoints are disabled …` message. This prevents silent network
+    exposure of operational data.
 - Token resolution order:
-  1. `SYMPHONY_CONTROL_TOKEN` environment variable.
+  1. `SYMPHONY_CONTROL_TOKEN` environment variable (whitespace-only
+     values are treated as "no token configured").
   2. File at `observability.control_token_file` (default
      `.symphony/control-token`, relative to CWD).
-- If no token is configured, control endpoints return `403` with
-  `{ "ok": false, "error": { "code": "control_disabled", … } }` and the
-  TUI runs in read-only mode.
-- If the configured `server.host` is non-loopback, mutating endpoints
-  *also* require a token regardless of any loopback exception.
+- The TUI client mirrors this: it sends `Authorization: Bearer <token>`
+  on every request when configured, and only ever omits it on
+  `/api/v1/health`.
 
 ### Event payload
 

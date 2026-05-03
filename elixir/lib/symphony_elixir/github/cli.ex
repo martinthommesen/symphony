@@ -82,6 +82,10 @@ defmodule SymphonyElixir.GitHub.CLI do
       {:error, :timeout} ->
         Logger.warning("gh #{summary(args)} timed out after #{timeout_ms()}ms")
         {:error, :gh_timeout}
+
+      {:error, {:runner_exit, reason}} ->
+        Logger.warning("gh #{summary(args)} runner crashed: #{inspect(reason)}")
+        {:error, {:gh_runner_exit, reason}}
     end
   end
 
@@ -101,6 +105,13 @@ defmodule SymphonyElixir.GitHub.CLI do
         Logger.warning("gh #{summary(args)} timed out after #{timeout_ms()}ms")
         # Mirror a non-zero exit so callers can branch on it.
         {124, Redaction.redact("gh timed out after #{timeout_ms()}ms")}
+
+      {:error, {:runner_exit, reason}} ->
+        Logger.warning("gh #{summary(args)} runner crashed: #{inspect(reason)}")
+        # Distinguish from timeout via a different "exit code" so
+        # callers that branch on it can tell apart a fast crash from
+        # a deadline miss.
+        {125, Redaction.redact("gh runner crashed: #{inspect(reason)}")}
     end
   end
 
@@ -112,10 +123,28 @@ defmodule SymphonyElixir.GitHub.CLI do
     runner_fun = runner()
     task = Task.async(fn -> runner_fun.(args, stderr_to_stdout: true) end)
 
-    case Task.yield(task, deadline_ms) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> {:ok, result}
-      {:exit, _reason} -> {:error, :timeout}
-      nil -> {:error, :timeout}
+    case Task.yield(task, deadline_ms) do
+      # The runner returned cleanly inside the deadline.
+      {:ok, result} ->
+        {:ok, result}
+
+      # The runner crashed BEFORE the deadline. Don't misreport this
+      # as a timeout — bubble the exit reason so callers can tell a
+      # genuine timeout (no result) apart from a fast crash.
+      {:exit, reason} ->
+        {:error, {:runner_exit, reason}}
+
+      # No result yet → past the deadline. Brutal-kill the task and
+      # report the timeout. `Task.shutdown(:brutal_kill)` returns
+      # `nil` if the task was already gone, `{:ok, result}` if it
+      # finished after `Task.yield/2` returned, or `{:exit, reason}`
+      # if a crash raced the kill — handle each case explicitly.
+      nil ->
+        case Task.shutdown(task, :brutal_kill) do
+          {:ok, result} -> {:ok, result}
+          {:exit, reason} -> {:error, {:runner_exit, reason}}
+          nil -> {:error, :timeout}
+        end
     end
   end
 

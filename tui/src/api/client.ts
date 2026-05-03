@@ -184,10 +184,14 @@ export class ApiClient {
       headers["content-type"] = "application/json";
     }
 
-    if (path.startsWith("/api/v1/control/") || path === "/api/v1/refresh") {
-      if (this.controlToken) {
-        headers["authorization"] = `Bearer ${this.controlToken}`;
-      }
+    // The backend's `:control_auth` pipeline now gates ALL observability
+    // routes (state/issues/events/analytics + the SSE stream + the
+    // mutating control routes) when a token is configured. Send the
+    // bearer on every request when we have one — the server will accept
+    // it on reads too, and reject reads with 401 if we don't. The only
+    // unauthenticated route is `/api/v1/health`.
+    if (this.controlToken && path !== "/api/v1/health") {
+      headers["authorization"] = `Bearer ${this.controlToken}`;
     }
 
     const controller = new AbortController();

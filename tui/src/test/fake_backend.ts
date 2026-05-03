@@ -48,6 +48,21 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
     fetch(req) {
       const url = new URL(req.url);
 
+      // Mirror the real backend's `:control_auth` pipeline: every
+      // observability route except /api/v1/health requires a valid
+      // bearer when a token is configured.
+      if (
+        controlToken &&
+        url.pathname !== "/api/v1/health" &&
+        url.pathname.startsWith("/api/v1/") &&
+        !authorized(req.headers)
+      ) {
+        const presented = req.headers.get("authorization");
+        const code = presented ? "invalid_token" : "missing_token";
+        const message = presented ? "Invalid bearer token" : "Authorization: Bearer <token> required";
+        return jsonResponse({ ok: false, error: { code, message } }, 401);
+      }
+
       if (url.pathname === "/api/v1/health") {
         return jsonResponse({
           status: "ok",

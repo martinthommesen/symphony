@@ -146,13 +146,11 @@ defmodule SymphonyElixir.Observability.EventStoreTest do
   end
 
   test "EventStore.query honours an explicit timeout when the GenServer is busy" do
-    # Spawn an isolated EventStore and freeze its loop. Confirm that
-    # the call-side timeout returns [] without leaking exits to the
-    # caller process. We can't easily stall a GenServer cleanly, so we
-    # exercise the code path by passing a tiny timeout and a server
-    # name that points at a process we haven't replied to.
-    name = String.to_atom("event_store_busy_#{System.unique_integer([:positive])}")
-
+    # Spawn a frozen process that *looks* like a GenServer to the
+    # caller but never replies. We pass the pid directly to avoid
+    # minting a runtime atom — `String.to_atom/1` on a unique value
+    # would leak atoms (BEAM doesn't GC them) and trips Credo's
+    # UnsafeToAtom check.
     pid =
       spawn(fn ->
         receive do
@@ -160,9 +158,7 @@ defmodule SymphonyElixir.Observability.EventStoreTest do
         end
       end)
 
-    Process.register(pid, name)
-
-    assert EventStore.query(%{}, name, 25) == []
+    assert EventStore.query(%{}, pid, 25) == []
 
     Process.exit(pid, :kill)
   end

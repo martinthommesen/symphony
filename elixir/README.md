@@ -182,8 +182,19 @@ The legacy endpoints (`GET /api/v1/state`, `GET /api/v1/<issue_identifier>`,
 
 The control token resolves from `SYMPHONY_CONTROL_TOKEN` first, then from
 `observability.control_token_file` (default `.symphony/control-token`).
-When no token is configured the control endpoints return `403`
-`control_disabled` and the TUI runs in read-only mode.
+
+`/api/v1/health` is public; every other route under `/api/v1/*` is gated
+by the `RequireBearer` plug:
+
+- **Token configured:** all requests must carry `Authorization: Bearer
+  <token>`. Wrong/missing → `401`.
+- **No token + loopback bind:** requests are accepted (read-only
+  convenience for local dev).
+- **No token + non-loopback bind:** every gated route returns `403
+  control_disabled` so operational data isn't leaked over the network.
+
+The TUI mirrors this on the client side: it sends the bearer on every
+request when configured, and only ever omits it on `/api/v1/health`.
 
 See [`docs/opentui-dashboard.md`](../docs/opentui-dashboard.md) for the
 TUI architecture, OpenTUI assumptions, security posture, and keybindings.

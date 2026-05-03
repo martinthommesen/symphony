@@ -55,11 +55,13 @@ defmodule SymphonyElixirWeb.Plugs.RequireBearer do
       :read_only ->
         # No token configured. Permit only when bound to a loopback
         # interface; otherwise the read endpoints would leak operational
-        # data over the network without authentication.
+        # data over the network without authentication. The plug now
+        # gates both reads (state/issues/events/analytics) and writes
+        # (control/refresh) so the message is route-agnostic.
         if Control.loopback_only?() do
           :allow
         else
-          {:reject, 403, "control_disabled", "Control endpoints are disabled (no token configured) and the server is not bound to a loopback address."}
+          {:reject, 403, "control_disabled", "Observability and control endpoints are disabled (no token configured) and the server is not bound to a loopback address."}
         end
 
       {:error, :missing_token} ->

@@ -28,7 +28,7 @@ describe("ApiClient", () => {
     expect(headers.get("authorization")).toBe("Bearer secret-token");
   });
 
-  test("does not include bearer for read endpoints", async () => {
+  test("does not include bearer on /api/v1/health (the only public route)", async () => {
     let headers: Headers | null = null;
     const fetchImpl: typeof fetch = ((_url: string, init?: RequestInit) => {
       headers = new Headers(init?.headers as Record<string, string>);
@@ -37,6 +37,37 @@ describe("ApiClient", () => {
 
     const client = new ApiClient({ baseUrl: "http://x", controlToken: "t", fetchImpl });
     await client.health();
+    expect(headers!.get("authorization")).toBeNull();
+  });
+
+  test("includes bearer on read endpoints when control token is configured", async () => {
+    // The backend's `:control_auth` pipeline gates state/issues/events/
+    // analytics too, so the client must authenticate every non-health
+    // request when it has a token.
+    let headers: Headers | null = null;
+    const fetchImpl: typeof fetch = ((_url: string, init?: RequestInit) => {
+      headers = new Headers(init?.headers as Record<string, string>);
+      return Promise.resolve(
+        jsonResponse({ generated_at: "2026-01-01T00:00:00Z", running: [], retrying: [] }),
+      );
+    }) as unknown as typeof fetch;
+
+    const client = new ApiClient({ baseUrl: "http://x", controlToken: "secret", fetchImpl });
+    await client.state();
+    expect(headers!.get("authorization")).toBe("Bearer secret");
+  });
+
+  test("omits bearer on read endpoints when no control token is configured", async () => {
+    let headers: Headers | null = null;
+    const fetchImpl: typeof fetch = ((_url: string, init?: RequestInit) => {
+      headers = new Headers(init?.headers as Record<string, string>);
+      return Promise.resolve(
+        jsonResponse({ generated_at: "2026-01-01T00:00:00Z", running: [], retrying: [] }),
+      );
+    }) as unknown as typeof fetch;
+
+    const client = new ApiClient({ baseUrl: "http://x", controlToken: null, fetchImpl });
+    await client.state();
     expect(headers!.get("authorization")).toBeNull();
   });
 
