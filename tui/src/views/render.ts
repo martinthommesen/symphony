@@ -11,6 +11,7 @@ import { buildFrame } from "../render/adapter.ts";
 import type { AppState, ViewName } from "../state/store.ts";
 import {
   activeAgentCount,
+  eventsForSelectedIssue,
   filteredEvents,
   filteredIssues,
   isControlEnabled,
@@ -307,9 +308,11 @@ function renderLiveAgent(state: AppState, theme: Theme, width: number, available
   rows.push(blankRow(width));
   rows.push(sectionTitle("Stream", theme));
 
-  const streamEvents = state.events
-    .filter((e) => e.issue_identifier === issue.issue_identifier)
-    .slice(-Math.max(1, available - 8));
+  // Reuse `eventsForSelectedIssue` so events that carry only `issue_id`
+  // (e.g. the orchestrator's `:agent_stopped` audit emit) still appear
+  // in the per-issue stream. Filtering on `issue_identifier` alone
+  // dropped real control feedback.
+  const streamEvents = eventsForSelectedIssue(state).slice(-Math.max(1, available - 8));
 
   if (streamEvents.length === 0) {
     rows.push([{ text: "  (no events for this issue yet)", fg: theme.muted }]);

@@ -68,6 +68,34 @@ describe("renderApp", () => {
     expect(frame.rows.length).toBe(12);
   });
 
+  test("Live view includes events that carry only issue_id", () => {
+    // The orchestrator's :agent_stopped audit event is emitted with
+    // issue_id but no issue_identifier; it must still appear in the
+    // selected issue's Live stream.
+    const state = initialState({
+      view: "live",
+      layoutWidth: 120,
+      layoutHeight: 30,
+      issues: [{ issue_id: "42", issue_identifier: "GH-42" }],
+      selectedIssueId: "42",
+      events: [
+        {
+          id: "evt_id_only",
+          type: "agent_stopped",
+          severity: "warning",
+          timestamp: "2026-01-01T00:00:00Z",
+          issue_id: "42",
+          issue_identifier: null,
+          message: "Stop requested via control API",
+        },
+      ],
+    });
+    const frame = renderApp(state, DEFAULT_THEME);
+    const text = flatten(frame.rows);
+    expect(text).toContain("agent_stopped");
+    expect(text).toContain("Stop requested");
+  });
+
   test("StubAdapter records frames", async () => {
     const adapter = new StubAdapter(60, 16);
     await adapter.start();
