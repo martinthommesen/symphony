@@ -96,8 +96,14 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
       _ -> :ok
     end
 
+    # Treat `?since=` (empty) as no since filter; only replay when the
+    # caller explicitly asked via `replay=1` or supplied a non-empty
+    # `since` value.
+    since = Map.get(params, "since")
+    replay? = Map.get(params, "replay") == "1" or (is_binary(since) and since != "")
+
     conn =
-      if Map.get(params, "replay") == "1" or Map.get(params, "since") do
+      if replay? do
         replay_events(conn, replay_filters)
       else
         conn

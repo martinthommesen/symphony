@@ -9,8 +9,12 @@ defmodule SymphonyElixir.Observability.EventStoreTest do
       _ -> :ok
     end
 
-    tmp = Path.join(System.tmp_dir!(), "symphony-events-#{System.unique_integer([:positive])}.jsonl")
-    on_exit(fn -> File.rm_rf(Path.dirname(tmp)) end)
+    # Use a dedicated subdirectory so `on_exit` can `rm_rf` the test's
+    # own temp tree without touching unrelated files in `System.tmp_dir!()`.
+    test_dir = Path.join(System.tmp_dir!(), "symphony-events-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(test_dir)
+    tmp = Path.join(test_dir, "events.jsonl")
+    on_exit(fn -> File.rm_rf(test_dir) end)
 
     name = String.to_atom("event_store_#{System.unique_integer([:positive])}")
 

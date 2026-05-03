@@ -95,20 +95,15 @@ defmodule SymphonyElixir.Observability.Control do
         :read_only
 
       configured when is_binary(configured) ->
-        case presented do
-          nil ->
-            {:error, :missing_token}
-
-          ^configured ->
-            :ok
-
-          presented when is_binary(presented) ->
-            if secure_equal?(configured, presented),
-              do: :ok,
-              else: {:error, :invalid_token}
-
-          _ ->
-            {:error, :invalid_token}
+        # Always route through `secure_equal?/2` — including for matching
+        # tokens — so the comparison time does not depend on how many
+        # leading bytes are correct. A `^configured -> :ok` pin would
+        # short-circuit and reintroduce a timing side-channel between
+        # correct and almost-correct tokens.
+        cond do
+          is_nil(presented) -> {:error, :missing_token}
+          is_binary(presented) and secure_equal?(configured, presented) -> :ok
+          true -> {:error, :invalid_token}
         end
     end
   end

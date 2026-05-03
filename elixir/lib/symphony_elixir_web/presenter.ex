@@ -400,12 +400,21 @@ defmodule SymphonyElixirWeb.Presenter do
   defp parse_issue_number(_), do: nil
 
   defp merge_running_only_issues(issues, snapshot) do
-    known_ids = MapSet.new(issues, & &1.issue_id)
+    # Build the known-id set from non-nil ids only. A nil id in the
+    # tracker projection would otherwise let snapshot entries with a
+    # nil `issue_id` masquerade as already-known and silently drop.
+    known_ids =
+      issues
+      |> Enum.map(& &1.issue_id)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
 
     extra_running =
       snapshot
       |> Map.get(:running, [])
-      |> Enum.reject(&MapSet.member?(known_ids, &1.issue_id))
+      |> Enum.reject(fn entry ->
+        is_nil(entry.issue_id) or MapSet.member?(known_ids, entry.issue_id)
+      end)
       |> Enum.map(fn entry ->
         %{
           issue_id: entry.issue_id,
