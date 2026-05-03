@@ -23,6 +23,14 @@ defmodule SymphonyElixir.Application do
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
 
+    # Register the configured control token (if any) for value-aware
+    # redaction. Catches cases where the literal token leaks via agent
+    # stdout without an `ENV_VAR=` or `Bearer` prefix.
+    case SymphonyElixir.Observability.Control.configured_token() do
+      token when is_binary(token) -> SymphonyElixir.Redaction.register_known_secret(token)
+      _ -> :ok
+    end
+
     children = [
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
       {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},

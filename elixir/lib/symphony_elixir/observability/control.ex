@@ -190,6 +190,9 @@ defmodule SymphonyElixir.Observability.Control do
       :unavailable ->
         {:error, :unavailable}
 
+      :timeout ->
+        {:error, :timeout}
+
       payload when is_map(payload) ->
         {:ok,
          payload

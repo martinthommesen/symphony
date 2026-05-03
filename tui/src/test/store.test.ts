@@ -97,15 +97,87 @@ describe("reducer", () => {
     }
     expect(state.notifications.length).toBe(5);
   });
+
+  test("state/received drops out-of-order responses with older generated_at", () => {
+    const initial = initialState();
+
+    const newer = reducer(initial, {
+      type: "state/received",
+      state: { generated_at: "2026-05-03T00:00:01Z" },
+    });
+    expect(newer.stateGeneratedAt).toBe("2026-05-03T00:00:01Z");
+
+    const older = reducer(newer, {
+      type: "state/received",
+      state: { generated_at: "2026-05-03T00:00:00Z", status: "stale" },
+    });
+    // Older snapshot must be ignored — `state` and `stateGeneratedAt`
+    // unchanged.
+    expect(older.state?.generated_at).toBe("2026-05-03T00:00:01Z");
+    expect(older.state?.status).not.toBe("stale");
+  });
+
+  test("issues/received drops out-of-order responses with older generated_at", () => {
+    const initial = initialState();
+
+    const newer = reducer(initial, {
+      type: "issues/received",
+      payload: {
+        generated_at: "2026-05-03T00:00:01Z",
+        issues: [{ issue_id: "1", issue_identifier: "GH-1" }],
+      },
+    });
+    expect(newer.issuesGeneratedAt).toBe("2026-05-03T00:00:01Z");
+
+    const older = reducer(newer, {
+      type: "issues/received",
+      payload: {
+        generated_at: "2026-05-03T00:00:00Z",
+        issues: [{ issue_id: "2", issue_identifier: "GH-2" }],
+      },
+    });
+
+    expect(older.issues.map((i) => i.issue_id)).toEqual(["1"]);
+  });
+
+  test("command/succeeded for a stale seq is ignored", () => {
+    let state = initialState();
+
+    state = reducer(state, { type: "command/started", command: "pause", seq: 1 });
+    state = reducer(state, { type: "command/started", command: "resume", seq: 2 });
+    expect(state.command?.command).toBe("resume");
+    expect(state.command?.state).toBe("pending");
+
+    // Pause's success arrives late — must not overwrite the active resume.
+    state = reducer(state, { type: "command/succeeded", command: "pause", seq: 1, message: "ok" });
+    expect(state.command?.command).toBe("resume");
+    expect(state.command?.state).toBe("pending");
+
+    // Resume's own success applies because seq matches.
+    state = reducer(state, { type: "command/succeeded", command: "resume", seq: 2, message: "ok" });
+    expect(state.command?.state).toBe("success");
+    expect(state.command?.command).toBe("resume");
+  });
 });
 
 describe("Store", () => {
-  test("subscribers fire on state change", () => {
+  test("subscribers fire exactly once per dispatch that changes state", () => {
     const store = new Store();
     let calls = 0;
-    store.subscribe(() => calls++);
+    const unsubscribe = store.subscribe(() => calls++);
+
     store.dispatch({ type: "view/changed", view: "issues" });
-    store.dispatch({ type: "view/changed", view: "issues" }); // identical state may still notify on new ref
-    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(calls).toBe(1);
+
+    // The reducer always returns a fresh object, so the second dispatch
+    // also produces a new ref and fires the subscriber. The behaviour
+    // we want to pin: subscribers fire on every applied action, not
+    // some deduplicated subset.
+    store.dispatch({ type: "view/changed", view: "issues" });
+    expect(calls).toBe(2);
+
+    unsubscribe();
+    store.dispatch({ type: "view/changed", view: "live" });
+    expect(calls).toBe(2);
   });
 });

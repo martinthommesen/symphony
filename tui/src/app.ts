@@ -42,6 +42,7 @@ export class App {
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private dirty = true;
   private stopped = false;
+  private commandSeq = 0;
 
   constructor(options: AppOptions) {
     this.client = options.client;
@@ -198,7 +199,10 @@ export class App {
     }
 
     if (key.name === "q") {
-      void this.stop().then(() => process.exit(0));
+      void this.stop().then(
+        () => process.exit(0),
+        () => process.exit(1),
+      );
       return;
     }
 
@@ -324,11 +328,19 @@ export class App {
 
   async runCommand(command: string, params: Record<string, unknown>, _confirmed: boolean): Promise<void> {
     if (this.store.getState().readOnly && command !== "refresh") {
-      this.dispatch({ type: "command/failed", command, message: "control disabled (read-only)" });
+      // Surface the rejection via a notification rather than synthesising
+      // a `command/failed` for a command we never started — otherwise the
+      // command badge would jump between two unrelated rejected states.
+      this.dispatch({
+        type: "notification/push",
+        severity: "error",
+        message: `${command}: control disabled (read-only)`,
+      });
       return;
     }
 
-    this.dispatch({ type: "command/started", command });
+    const seq = ++this.commandSeq;
+    this.dispatch({ type: "command/started", command, seq });
 
     try {
       const result = command === "refresh"
@@ -336,18 +348,19 @@ export class App {
         : await this.client.control(command, params);
 
       if (result.ok) {
-        this.dispatch({ type: "command/succeeded", command, message: "ok" });
+        this.dispatch({ type: "command/succeeded", command, seq, message: "ok" });
         // Optimistically refresh state.
         void this.refreshAll();
       } else {
         this.dispatch({
           type: "command/failed",
           command,
+          seq,
           message: `${result.error.code}: ${result.error.message}`,
         });
       }
     } catch (err) {
-      this.dispatch({ type: "command/failed", command, message: errorMessage(err) });
+      this.dispatch({ type: "command/failed", command, seq, message: errorMessage(err) });
     }
   }
 

@@ -12,55 +12,112 @@ import type { Frame, KeyEvent, RenderAdapter } from "./adapter.ts";
 
 type Listener<E> = (event: E) => void;
 
+// Local structural types for the subset of `@opentui/core` we touch.
+// `@opentui/core` does not ship rich .d.ts at 0.2.2; defining the shape
+// here keeps the rest of the file fully typed instead of leaking `any`
+// through every renderer interaction.
+interface OpenTuiRenderable {
+  readonly children?: ReadonlyArray<OpenTuiRenderable>;
+  add(child: OpenTuiRenderable): void;
+  remove(child: OpenTuiRenderable): void;
+  content?: string;
+  visible?: boolean;
+}
+
+interface OpenTuiKeyInput {
+  on?(
+    event: "keypress",
+    listener: (key: {
+      name?: string;
+      raw?: string;
+      ctrl?: boolean;
+      shift?: boolean;
+      meta?: boolean;
+    }) => void,
+  ): void;
+}
+
+interface OpenTuiRenderer {
+  readonly root: { add(child: OpenTuiRenderable): void };
+  on?(event: "resize", listener: (size: { width?: number; height?: number }) => void): void;
+  keyInput?: OpenTuiKeyInput;
+  terminalWidth?: number;
+  terminalHeight?: number;
+  start(): Promise<void> | void;
+  destroy?(): Promise<void> | void;
+}
+
+type OpenTuiModule = typeof import("@opentui/core");
+
 export class OpenTuiAdapter implements RenderAdapter {
-  private renderer: any = null;
-  private rootBox: any = null;
-  private contentBox: any = null;
-  private footerText: any = null;
-  private modalBox: any = null;
-  private modalText: any = null;
+  private renderer: OpenTuiRenderer | null = null;
+  private rootBox: OpenTuiRenderable | null = null;
+  private contentBox: OpenTuiRenderable | null = null;
+  private footerText: OpenTuiRenderable | null = null;
+  private modalBox: OpenTuiRenderable | null = null;
+  private modalText: OpenTuiRenderable | null = null;
   private currentSize = { width: 80, height: 24 };
   private keyListeners: Listener<KeyEvent>[] = [];
   private resizeListeners: Listener<{ width: number; height: number }>[] = [];
-  private OpenTui: any;
+  private OpenTui: OpenTuiModule | null = null;
+  // Monotonic counter so two paints in the same millisecond don't
+  // collide on `frame-${Date.now()}` ids — OpenTUI silently swallows
+  // duplicate child ids.
+  private paintCounter = 0;
 
   async start(): Promise<void> {
     // Lazy import so the test bundle stays Bun-FFI-free.
-    this.OpenTui = await import("@opentui/core");
+    const mod = (await import("@opentui/core")) as OpenTuiModule;
+    this.OpenTui = mod;
 
-    this.renderer = await this.OpenTui.createCliRenderer({
+    // The `@opentui/core` shape is loose at 0.2.2. We restrict ourselves
+    // to the subset declared in OpenTuiRenderer above; a `Renderer` cast
+    // here keeps the boundary in one place rather than scattering
+    // `as unknown as` throughout the file.
+    const ModFactory = mod as unknown as {
+      createCliRenderer: (opts: {
+        targetFps: number;
+        useAlternateScreen: boolean;
+        consoleMode: string;
+      }) => Promise<OpenTuiRenderer>;
+      BoxRenderable: new (renderer: OpenTuiRenderer, opts: Record<string, unknown>) => OpenTuiRenderable;
+      TextRenderable: new (renderer: OpenTuiRenderer, opts: Record<string, unknown>) => OpenTuiRenderable;
+    };
+
+    this.renderer = await ModFactory.createCliRenderer({
       targetFps: 30,
       useAlternateScreen: true,
       consoleMode: "console-overlay",
     });
 
-    const { BoxRenderable, TextRenderable } = this.OpenTui;
+    const renderer = this.renderer;
+    const { BoxRenderable, TextRenderable } = ModFactory;
 
-    this.rootBox = new BoxRenderable(this.renderer, {
+    this.rootBox = new BoxRenderable(renderer, {
       id: "symphony-root",
       flexGrow: 1,
       flexDirection: "column",
     });
 
-    this.contentBox = new BoxRenderable(this.renderer, {
+    this.contentBox = new BoxRenderable(renderer, {
       id: "symphony-content",
       flexGrow: 1,
       flexDirection: "column",
     });
 
-    this.footerText = new TextRenderable(this.renderer, {
+    this.footerText = new TextRenderable(renderer, {
       id: "symphony-footer",
       content: "",
     });
 
-    this.modalBox = new BoxRenderable(this.renderer, {
+    this.modalBox = new BoxRenderable(renderer, {
       id: "symphony-modal",
       visible: false,
       borderStyle: "single",
       padding: 1,
     });
 
-    this.modalText = new TextRenderable(this.renderer, {
+    this.modalText = new TextRenderable(renderer, {
       id: "symphony-modal-text",
       content: "",
     });
@@ -69,23 +126,23 @@ export class OpenTuiAdapter implements RenderAdapter {
     this.rootBox.add(this.contentBox);
     this.rootBox.add(this.footerText);
     this.rootBox.add(this.modalBox);
-    this.renderer.root.add(this.rootBox);
+    renderer.root.add(this.rootBox);
 
     this.currentSize = {
-      width: this.renderer.terminalWidth ?? 80,
-      height: this.renderer.terminalHeight ?? 24,
+      width: renderer.terminalWidth ?? 80,
+      height: renderer.terminalHeight ?? 24,
     };
 
-    this.renderer.on?.("resize", (size: any) => {
+    renderer.on?.("resize", (size) => {
       const next = {
-        width: size?.width ?? this.renderer.terminalWidth ?? 80,
-        height: size?.height ?? this.renderer.terminalHeight ?? 24,
+        width: size?.width ?? renderer.terminalWidth ?? 80,
+        height: size?.height ?? renderer.terminalHeight ?? 24,
       };
       this.currentSize = next;
       for (const l of this.resizeListeners) l(next);
     });
 
-    this.renderer.keyInput?.on?.("keypress", (key: any) => {
+    renderer.keyInput?.on?.("keypress", (key) => {
       const ev: KeyEvent = {
         name: key?.name ?? key?.raw ?? "",
         ctrl: !!key?.ctrl,
@@ -96,11 +153,11 @@ export class OpenTuiAdapter implements RenderAdapter {
       for (const l of this.keyListeners) l(ev);
     });
 
-    await this.renderer.start();
+    await renderer.start();
   }
 
   paint(frame: Frame): void {
-    if (!this.contentBox) return;
+    if (!this.contentBox || !this.OpenTui || !this.renderer) return;
     const flat = frame.rows
       .map((row) => row.map((span) => span.text).join(""))
       .join("\n");
@@ -115,9 +172,14 @@ export class OpenTuiAdapter implements RenderAdapter {
       }
     }
 
-    if (this.OpenTui && this.OpenTui.TextRenderable) {
-      const text = new this.OpenTui.TextRenderable(this.renderer, {
-        id: `frame-${Date.now()}`,
+    const TextRenderable = (this.OpenTui as unknown as {
+      TextRenderable: new (renderer: OpenTuiRenderer, opts: Record<string, unknown>) => OpenTuiRenderable;
+    }).TextRenderable;
+
+    if (TextRenderable) {
+      this.paintCounter += 1;
+      const text = new TextRenderable(this.renderer, {
+        id: `frame-${this.paintCounter}`,
         content: flat,
       });
       this.contentBox.add(text);
@@ -145,9 +207,14 @@ export class OpenTuiAdapter implements RenderAdapter {
 
   on(event: "key", listener: Listener<KeyEvent>): void;
   on(event: "resize", listener: Listener<{ width: number; height: number }>): void;
-  on(event: string, listener: Listener<any>): void {
-    if (event === "key") this.keyListeners.push(listener);
-    else if (event === "resize") this.resizeListeners.push(listener);
+  on(
+    event: "key" | "resize",
+    listener: Listener<KeyEvent> | Listener<{ width: number; height: number }>,
+  ): void {
+    if (event === "key") this.keyListeners.push(listener as Listener<KeyEvent>);
+    else if (event === "resize") {
+      this.resizeListeners.push(listener as Listener<{ width: number; height: number }>);
+    }
   }
 
   async stop(): Promise<void> {

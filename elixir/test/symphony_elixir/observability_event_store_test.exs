@@ -96,8 +96,16 @@ defmodule SymphonyElixir.Observability.EventStoreTest do
     assert {:ok, %{"type" => "poll_completed"}} = Jason.decode(line2)
   end
 
-  test "JSONL persistence failure does not crash store" do
-    bad_path = "/nonexistent/dir-#{System.unique_integer([:positive])}/events.jsonl"
+  test "JSONL persistence failure increments jsonl_failures and does not crash store" do
+    # Force a deterministic mkdir-then-write failure: write to the
+    # filesystem root which is not writable by the test process. On
+    # macOS+Linux the test runner is non-root, so `/nonexistent/...`
+    # `mkdir_p` succeeds in a parent we can't reach (returns :eacces
+    # via {:error, :enoent} when the leading mount is read-only) — to
+    # remove the platform variance, point at `/dev/null/.../events.jsonl`
+    # which can never be created (mkdir_p on a sub-path of a regular
+    # file returns ENOTDIR on every Unix).
+    bad_path = "/dev/null/symphony-events-#{System.unique_integer([:positive])}/events.jsonl"
 
     {:ok, pid} =
       EventStore.start_link(
@@ -110,11 +118,53 @@ defmodule SymphonyElixir.Observability.EventStoreTest do
     EventStore.emit(%{type: :tick}, pid)
     EventStore.emit(%{type: :tick}, pid)
 
+    # Casts are async; give the store a tick to drain.
+    Process.sleep(50)
     stats = EventStore.stats(pid)
-    assert stats.length == 2
-    # We can't predict mkdir success in every environment, but the store
-    # is still alive and serving queries.
-    assert is_integer(stats.jsonl_failures)
+
+    assert stats.length == 2,
+           "store should still serve queries even when persistence fails"
+
+    assert stats.jsonl_failures >= 2,
+           "expected jsonl_failures >= 2 (one per emit); got #{stats.jsonl_failures}"
+  end
+
+  test "apply_since with an evicted event id returns [] instead of replaying everything", %{pid: pid} do
+    Enum.each(1..10, fn n -> EventStore.emit(%{type: :tick, message: "#{n}"}, pid) end)
+
+    # The ring is sized at 5 in setup; ids from the first five emits are
+    # gone. Asking for events `since=evt_does_not_exist` must not flood
+    # the caller with the entire current ring (which would re-deliver
+    # already-seen events on SSE reconnect).
+    assert EventStore.query(%{since: "evt_does_not_exist"}, pid) == []
+
+    # A since= that matches an id still in the ring keeps replaying
+    # only what came after it.
+    [first | _] = EventStore.query(%{}, pid)
+    after_first = EventStore.query(%{since: first.id}, pid)
+    refute Enum.any?(after_first, fn ev -> ev.id == first.id end)
+  end
+
+  test "EventStore.query honours an explicit timeout when the GenServer is busy" do
+    # Spawn an isolated EventStore and freeze its loop. Confirm that
+    # the call-side timeout returns [] without leaking exits to the
+    # caller process. We can't easily stall a GenServer cleanly, so we
+    # exercise the code path by passing a tiny timeout and a server
+    # name that points at a process we haven't replied to.
+    name = String.to_atom("event_store_busy_#{System.unique_integer([:positive])}")
+
+    pid =
+      spawn(fn ->
+        receive do
+          :never -> :ok
+        end
+      end)
+
+    Process.register(pid, name)
+
+    assert EventStore.query(%{}, name, 25) == []
+
+    Process.exit(pid, :kill)
   end
 
   test "loads recent history from JSONL on startup, skipping malformed lines", %{jsonl: jsonl} do

@@ -80,13 +80,6 @@ defmodule SymphonyElixir.Observability.Analytics do
     }
   end
 
-  @doc """
-  Convenience over `compute/2` that ignores history loading and just builds
-  metrics from a snapshot.
-  """
-  @spec compute_from_snapshot(map() | nil) :: metrics()
-  def compute_from_snapshot(snapshot), do: compute([], snapshot)
-
   defp type_label(%Event{type: t}) when is_atom(t), do: Atom.to_string(t)
   defp type_label(%Event{type: t}) when is_binary(t), do: t
   defp type_label(%Event{type: t}), do: to_string(t)

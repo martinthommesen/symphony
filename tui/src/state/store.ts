@@ -31,6 +31,8 @@ export interface CommandStatus {
   state: "pending" | "success" | "error";
   message?: string;
   startedAt: number;
+  /** Monotonic per-command sequence number; stale results are ignored. */
+  seq: number;
 }
 
 export interface AppState {
@@ -39,6 +41,9 @@ export interface AppState {
   connectionMessage: string | null;
   health: HealthPayload | null;
   state: StatePayload | null;
+  /** Most recent `state.generated_at` accepted into `state`. Older
+   *  payloads (out-of-order HTTP responses) are dropped. */
+  stateGeneratedAt: string | null;
   issues: IssueProjection[];
   issuesGeneratedAt: string | null;
   issuesSource: string | null;
@@ -71,9 +76,9 @@ export type Action =
   | { type: "events/filter"; filter: Partial<AppState["eventFilter"]> }
   | { type: "events/follow"; follow: boolean }
   | { type: "analytics/received"; payload: AnalyticsPayload }
-  | { type: "command/started"; command: string }
-  | { type: "command/succeeded"; command: string; message?: string }
-  | { type: "command/failed"; command: string; message: string }
+  | { type: "command/started"; command: string; seq: number }
+  | { type: "command/succeeded"; command: string; seq: number; message?: string }
+  | { type: "command/failed"; command: string; seq: number; message: string }
   | { type: "search/open"; open: boolean }
   | { type: "search/changed"; query: string }
   | { type: "confirm/show"; command: string; message: string; payload: Record<string, unknown> }
@@ -90,6 +95,7 @@ export function initialState(overrides: Partial<AppState> = {}): AppState {
     connectionMessage: null,
     health: null,
     state: null,
+    stateGeneratedAt: null,
     issues: [],
     issuesGeneratedAt: null,
     issuesSource: null,
@@ -143,10 +149,30 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     }
 
-    case "state/received":
-      return { ...state, state: action.state };
+    case "state/received": {
+      // Drop out-of-order responses: a slow `/api/v1/state` resolved
+      // after a fresher one would otherwise overwrite the newer
+      // snapshot. Compare server-stamped `generated_at` because client
+      // wall clocks would race the same dispatch order.
+      if (state.stateGeneratedAt && action.state.generated_at &&
+          action.state.generated_at < state.stateGeneratedAt) {
+        return state;
+      }
+      return {
+        ...state,
+        state: action.state,
+        stateGeneratedAt: action.state.generated_at || state.stateGeneratedAt,
+      };
+    }
 
     case "issues/received": {
+      // Same monotonic gate as `state/received` — issues poll is on the
+      // same 2s cadence and stacks the same way.
+      if (state.issuesGeneratedAt && action.payload.generated_at &&
+          action.payload.generated_at < state.issuesGeneratedAt) {
+        return state;
+      }
+
       const selected = state.selectedIssueId &&
         action.payload.issues.some((i) => i.issue_id === state.selectedIssueId)
         ? state.selectedIssueId
@@ -189,30 +215,40 @@ export function reducer(state: AppState, action: Action): AppState {
     case "command/started":
       return {
         ...state,
-        command: { command: action.command, state: "pending", startedAt: Date.now() },
+        command: {
+          command: action.command,
+          state: "pending",
+          startedAt: Date.now(),
+          seq: action.seq,
+        },
       };
 
-    case "command/succeeded":
+    case "command/succeeded": {
+      // Ignore stale results: pressing `p` (pause) then quickly `u`
+      // (resume) would otherwise see pause's success arrive after
+      // resume's started, clobbering the active resume status.
+      if (!state.command || state.command.seq !== action.seq) return state;
       return {
         ...state,
         command: {
-          command: action.command,
+          ...state.command,
           state: "success",
           message: action.message,
-          startedAt: state.command?.startedAt ?? Date.now(),
         },
       };
+    }
 
-    case "command/failed":
+    case "command/failed": {
+      if (!state.command || state.command.seq !== action.seq) return state;
       return {
         ...state,
         command: {
-          command: action.command,
+          ...state.command,
           state: "error",
           message: action.message,
-          startedAt: state.command?.startedAt ?? Date.now(),
         },
       };
+    }
 
     case "search/open":
       return { ...state, searchOpen: action.open };
@@ -272,13 +308,22 @@ function mergeUnique(existing: EventPayload[], incoming: EventPayload[]): EventP
   if (incoming.length === 0) return existing;
   const seen = new Set(existing.map((e) => e.id));
   const merged = [...existing];
+  let appended = 0;
   for (const ev of incoming) {
     if (!seen.has(ev.id)) {
       merged.push(ev);
       seen.add(ev.id);
+      appended++;
     }
   }
-  merged.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  if (appended === 0) return existing;
+  // Always sort: SSE may deliver out-of-order during reconnect catch-up,
+  // and the secondary `id.localeCompare` keeps ties deterministic so
+  // identical timestamps produce a stable view across renders.
+  merged.sort((a, b) => {
+    const cmp = a.timestamp.localeCompare(b.timestamp);
+    return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
+  });
   return merged;
 }
 

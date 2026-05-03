@@ -9,7 +9,22 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   alias SymphonyElixir.Observability.{Control, Event, EventStore}
   alias SymphonyElixirWeb.{Endpoint, Presenter}
 
+  require Logger
+
   @sse_heartbeat_interval_ms 20_000
+  @sse_query_timeout_ms 2_000
+  # Mailbox length thresholds for slow-consumer protection. PubSub
+  # `send/2` to a wedged SSE pid never drops, so without backpressure a
+  # slow client can OOM the BEAM. When the request mailbox grows past
+  # `@sse_max_mailbox`, drain `:observability_event` messages down to
+  # `@sse_drain_target` and surface the dropped count in the loop.
+  @sse_max_mailbox 1_000
+  @sse_drain_target 500
+  # Hard lifetime cap so an SSE connection can never live indefinitely
+  # even under sustained backpressure. 30 minutes is well above any
+  # reasonable manual-watch session and short enough to bound memory in
+  # pathological cases.
+  @sse_max_lifetime_ms 30 * 60 * 1_000
 
   # ---------------------------------------------------------------------------
   # Read endpoints
@@ -112,16 +127,19 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
         conn
       end
 
-    schedule_heartbeat()
-
     case send_comment(conn, "connected") do
-      {:ok, conn} -> sse_loop(conn, filters)
-      {:error, _reason} -> conn
+      {:ok, conn} ->
+        deadline = System.monotonic_time(:millisecond) + @sse_max_lifetime_ms
+        sse_loop(conn, filters, schedule_heartbeat(), 0, deadline)
+
+      {:error, _reason} ->
+        conn
     end
   end
 
   defp replay_events(conn, filters) do
-    EventStore.query(filters)
+    filters
+    |> EventStore.query(EventStore, @sse_query_timeout_ms)
     |> Enum.reduce_while(conn, fn event, acc ->
       case send_event(acc, event) do
         {:ok, conn} -> {:cont, conn}
@@ -130,34 +148,83 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end)
   end
 
-  defp sse_loop(conn, filters) do
-    receive do
-      {:observability_event, %Event{} = event} ->
-        if matches_filters?(event, filters) do
-          case send_event(conn, event) do
-            {:ok, conn} -> sse_loop(conn, filters)
-            {:error, _reason} -> conn
-          end
-        else
-          sse_loop(conn, filters)
-        end
+  defp sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms) do
+    cond do
+      System.monotonic_time(:millisecond) >= deadline_ms ->
+        # Hard lifetime cap reached. Send a final summary frame so the
+        # client knows to reconnect (carrying the last seen event id) and
+        # bail out of the request process so no further messages
+        # accumulate in its mailbox.
+        Process.cancel_timer(heartbeat_ref)
+        _ = send_comment(conn, "lifetime_exceeded:dropped=#{dropped}")
+        conn
 
-      :sse_heartbeat ->
-        schedule_heartbeat()
+      mailbox_len() > @sse_max_mailbox ->
+        drained = drain_observability_events(@sse_drain_target)
 
-        case send_comment(conn, "heartbeat") do
-          {:ok, conn} -> sse_loop(conn, filters)
-          {:error, _reason} -> conn
-        end
+        Logger.warning(
+          "SSE consumer slow; mailbox dropped=#{drained} cumulative=#{dropped + drained}"
+        )
 
-      _other ->
-        sse_loop(conn, filters)
-    after
-      30_000 ->
-        case send_comment(conn, "idle") do
-          {:ok, conn} -> sse_loop(conn, filters)
-          {:error, _reason} -> conn
+        sse_loop(conn, filters, heartbeat_ref, dropped + drained, deadline_ms)
+
+      true ->
+        receive do
+          {:observability_event, %Event{} = event} ->
+            if matches_filters?(event, filters) do
+              case send_event(conn, event) do
+                {:ok, conn} -> sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms)
+                {:error, _reason} -> finish_sse(conn, heartbeat_ref)
+              end
+            else
+              sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms)
+            end
+
+          :sse_heartbeat ->
+            case send_comment(conn, "heartbeat") do
+              {:ok, conn} -> sse_loop(conn, filters, schedule_heartbeat(), dropped, deadline_ms)
+              {:error, _reason} -> finish_sse(conn, heartbeat_ref)
+            end
+
+          _other ->
+            sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms)
+        after
+          30_000 ->
+            case send_comment(conn, "idle:dropped=#{dropped}") do
+              {:ok, conn} -> sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms)
+              {:error, _reason} -> finish_sse(conn, heartbeat_ref)
+            end
         end
+    end
+  end
+
+  defp finish_sse(conn, heartbeat_ref) do
+    # Cancel the still-pending heartbeat so the request process cannot
+    # outlive the cleanup loop with a stray :sse_heartbeat message.
+    Process.cancel_timer(heartbeat_ref)
+    conn
+  end
+
+  defp mailbox_len do
+    case Process.info(self(), :message_queue_len) do
+      {:message_queue_len, n} -> n
+      _ -> 0
+    end
+  end
+
+  defp drain_observability_events(target) do
+    drain_loop(0, target)
+  end
+
+  defp drain_loop(drained, target) do
+    if mailbox_len() > target do
+      receive do
+        {:observability_event, _event} -> drain_loop(drained + 1, target)
+      after
+        0 -> drained
+      end
+    else
+      drained
     end
   end
 
@@ -236,72 +303,61 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
         |> put_status(202)
         |> json(payload)
 
+      {:error, :timeout} ->
+        error_response(conn, 503, "orchestrator_timeout", "Orchestrator did not respond in time")
+
       {:error, :unavailable} ->
         error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
     end
   end
 
+  # Auth is enforced by `SymphonyElixirWeb.Plugs.RequireBearer` in the
+  # router pipeline; by the time we reach this action, the request is
+  # either authenticated or running on a loopback bind without a
+  # configured token (see plug docstring).
   @spec control(Conn.t(), map()) :: Conn.t()
   def control(conn, params) do
-    with :ok <- authorize(conn) do
-      command = command_atom(params["command"] || List.last(conn.path_info))
+    command = command_atom(params["command"] || List.last(conn.path_info))
 
-      case Control.execute(command, params, orchestrator: orchestrator()) do
-        {:ok, payload} ->
-          json(conn, %{ok: true, command: command, payload: payload})
+    case Control.execute(command, params, orchestrator: orchestrator()) do
+      {:ok, payload} ->
+        json(conn, %{ok: true, command: command, payload: payload})
 
-        {:error, :issue_not_found} ->
-          error_response(conn, 404, "issue_not_found", "Issue not found")
+      {:error, :issue_not_found} ->
+        error_response(conn, 404, "issue_not_found", "Issue not found")
 
-        {:error, :issue_not_running} ->
-          error_response(conn, 409, "issue_not_running", "Issue is not currently running")
+      {:error, :issue_not_running} ->
+        error_response(conn, 409, "issue_not_running", "Issue is not currently running")
 
-        {:error, :not_dispatchable} ->
-          error_response(conn, 409, "not_dispatchable", "Issue is not eligible for dispatch")
+      {:error, :not_dispatchable} ->
+        error_response(conn, 409, "not_dispatchable", "Issue is not eligible for dispatch")
 
-        {:error, :missing_issue_identifier} ->
-          error_response(conn, 400, "missing_issue_identifier", "issue_identifier is required")
+      {:error, :missing_issue_identifier} ->
+        error_response(conn, 400, "missing_issue_identifier", "issue_identifier is required")
 
-        {:error, :unsupported} ->
-          error_response(conn, 409, "unsupported", "Tracker does not support this operation")
+      {:error, :unsupported} ->
+        error_response(conn, 409, "unsupported", "Tracker does not support this operation")
 
-        {:error, :timeout} ->
-          error_response(conn, 503, "orchestrator_timeout", "Orchestrator did not respond in time")
-
-        {:error, :unavailable} ->
-          error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
-
-        {:error, :unknown_command} ->
-          error_response(conn, 400, "unknown_command", "Unknown control command")
-
-        {:error, reason} ->
-          error_response(conn, 400, "control_error", inspect(reason))
-      end
-    else
-      :read_only ->
+      {:error, :pending_command_in_flight} ->
         error_response(
           conn,
-          403,
-          "control_disabled",
-          "Control endpoints are disabled (no token configured). Run scripts/setup-symphony-copilot.sh or set SYMPHONY_CONTROL_TOKEN."
+          409,
+          "pending_command_in_flight",
+          "A previous command for this issue is still in flight"
         )
 
-      {:error, :missing_token} ->
-        error_response(conn, 401, "missing_token", "Authorization: Bearer <token> required")
+      {:error, :timeout} ->
+        error_response(conn, 503, "orchestrator_timeout", "Orchestrator did not respond in time")
 
-      {:error, :invalid_token} ->
-        error_response(conn, 401, "invalid_token", "Invalid bearer token")
+      {:error, :unavailable} ->
+        error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+
+      {:error, :unknown_command} ->
+        error_response(conn, 400, "unknown_command", "Unknown control command")
+
+      {:error, reason} ->
+        error_response(conn, 400, "control_error", inspect(reason))
     end
-  end
-
-  defp authorize(conn) do
-    header =
-      case Conn.get_req_header(conn, "authorization") do
-        [value | _] -> value
-        _ -> nil
-      end
-
-    Control.authenticate(Control.extract_bearer(header))
   end
 
   defp command_atom(value) when is_binary(value) do

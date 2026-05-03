@@ -1,5 +1,13 @@
-import { describe, expect, test } from "bun:test";
-import { containsSecret, redact, redactDeep } from "../redaction/redact.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  clearKnownSecrets,
+  containsSecret,
+  redact,
+  redactDeep,
+  registerKnownSecret,
+} from "../redaction/redact.ts";
+
+afterEach(() => clearKnownSecrets());
 
 describe("redact", () => {
   test("masks GitHub OAuth tokens", () => {
@@ -45,5 +53,40 @@ describe("redact", () => {
   test("containsSecret returns true for secrets and false otherwise", () => {
     expect(containsSecret("Bearer abc1234567890XYZdefghi")).toBe(true);
     expect(containsSecret("plain text")).toBe(false);
+  });
+
+  test("masks SYMPHONY_CONTROL_TOKEN= env var assignments", () => {
+    const out = redact(
+      "env SYMPHONY_CONTROL_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef body",
+    );
+    expect(out).toContain("SYMPHONY_CONTROL_TOKEN=[REDACTED]");
+    expect(out).not.toContain("0123456789abcdef0123456789abcdef");
+  });
+
+  test("masks gh* tokens that border on `_` via lookbehind boundary", () => {
+    // Old `\b` boundary failed between `_` and `g`, leaking the token
+    // when it appeared after another word character. The new
+    // `(?<![A-Za-z0-9_])` lookbehind catches it.
+    const out = redact("prevtoken_gho_AAAABBBBCCCCDDDDEEEEFFFFGGGG and friends");
+    expect(out).not.toContain("AAAABBBBCCCCDDDDEEEEFFFFGGGG");
+    expect(out).toContain("[REDACTED]");
+  });
+
+  test("registered known secrets are redacted even without an env-var prefix", () => {
+    const literal = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    registerKnownSecret(literal);
+
+    const out = redact(`got the bearer ${literal} as a bare value`);
+    expect(out).not.toContain(literal);
+    expect(out).toContain("[REDACTED]");
+
+    expect(containsSecret(`leak ${literal} leak`)).toBe(true);
+  });
+
+  test("registerKnownSecret ignores values shorter than 16 bytes", () => {
+    registerKnownSecret("tiny");
+    // The cleaner shouldn't replace `tiny` everywhere; that would
+    // false-positive on prose.
+    expect(redact("a tiny value")).toBe("a tiny value");
   });
 });

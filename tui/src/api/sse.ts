@@ -62,7 +62,11 @@ export class SseClient {
 
   start(): void {
     if (this.stopped) return;
-    this.connect();
+    // Idempotent: a second `start()` while a connection or reconnect
+    // is already in flight would otherwise spawn a parallel `connect()`
+    // chain and double-deliver every event.
+    if (this.abortController || this.reconnectTimer) return;
+    void this.connect();
   }
 
   stop(): void {
@@ -181,7 +185,10 @@ export class SseClient {
   private scheduleReconnect(): void {
     if (this.stopped) return;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    const delay = this.currentBackoff;
+    // ±25% jitter so a fleet of TUIs reconnecting after a server
+    // restart doesn't fire in lockstep at every doubling step.
+    const jitter = Math.random() * 0.5 + 0.75;
+    const delay = Math.round(this.currentBackoff * jitter);
     this.currentBackoff = Math.min(this.currentBackoff * 2, this.options.maxBackoffMs);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

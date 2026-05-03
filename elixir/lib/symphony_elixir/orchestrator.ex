@@ -39,7 +39,12 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      # Per-issue lock set for in-flight async control commands. While
+      # an issue id is in this set, dispatch/retry refuse with
+      # `:pending_command_in_flight` to prevent control commands from
+      # racing each other on the same issue.
+      pending_commands: MapSet.new()
     ]
   end
 
@@ -218,6 +223,25 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
+
+  def handle_info({:pending_command_completed, issue_id, identifier, result}, state) do
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Orchestrator pending command for issue_id=#{issue_id} failed: #{inspect(reason)}"
+        )
+    end
+
+    pending =
+      state.pending_commands
+      |> MapSet.delete(issue_id)
+      |> MapSet.delete(identifier)
+
+    {:noreply, %{state | pending_commands: pending}}
+  end
 
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
@@ -1075,15 +1099,20 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
-  @spec request_refresh() :: map() | :unavailable
+  @spec request_refresh() :: map() | :timeout | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
   end
 
-  @spec request_refresh(GenServer.server()) :: map() | :unavailable
-  def request_refresh(server) do
+  @spec request_refresh(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
+  def request_refresh(server, timeout \\ 5_000) do
     if alive?(server) do
-      GenServer.call(server, :request_refresh)
+      try do
+        GenServer.call(server, :request_refresh, timeout)
+      catch
+        :exit, {:timeout, _} -> :timeout
+        :exit, _ -> :unavailable
+      end
     else
       :unavailable
     end
@@ -1248,8 +1277,30 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_call({:stop_issue, identifier_or_id}, _from, state) do
     case find_running_by_identifier(state, identifier_or_id) do
-      {issue_id, _entry} ->
-        new_state = terminate_running_issue(state, issue_id, false)
+      {issue_id, entry} ->
+        # Lock both the issue_id and the identifier so a follow-up
+        # dispatch/retry by either form is rejected with
+        # `:pending_command_in_flight` until the async tracker label
+        # clear completes.
+        identifier = entry.identifier
+
+        pending =
+          state.pending_commands
+          |> MapSet.put(issue_id)
+          |> MapSet.put(identifier)
+
+        new_state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> Map.put(:pending_commands, pending)
+
+        # Clear tracker labels asynchronously: terminate_running_issue/3
+        # only updates orchestrator state, so without this the tracker
+        # would still believe the issue is `running` until the next
+        # poll. Spawning under the supervised TaskSupervisor + the
+        # `gh` CLI timeout (see GitHub.CLI.run_with_timeout) means a
+        # stuck `gh` cannot block the orchestrator.
+        spawn_clear_running_label(issue_id, identifier, identifier_or_id)
 
         SymphonyElixir.Observability.emit(:agent_stopped, %{
           severity: :warning,
@@ -1266,55 +1317,78 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_call({:dispatch_issue, identifier_or_id}, _from, state) do
-    case Tracker.fetch_candidate_issues() do
-      {:ok, issues} ->
-        case find_dispatchable_issue(issues, identifier_or_id) do
-          %Issue{} = issue ->
-            active_states = active_state_set()
-            terminal_states = terminal_state_set()
+    target = to_string(identifier_or_id)
 
-            if should_dispatch_issue?(issue, state, active_states, terminal_states) do
-              new_state = dispatch_issue(state, issue)
+    cond do
+      command_target_pending?(state, target) ->
+        {:reply, {:error, :pending_command_in_flight}, state}
 
-              SymphonyElixir.Observability.emit(:issue_dispatched, %{
-                issue_id: issue.id,
-                issue_identifier: issue.identifier,
-                message: "Manual dispatch via control API"
-              })
+      true ->
+        case Tracker.fetch_candidate_issues() do
+          {:ok, issues} ->
+            case find_dispatchable_issue(issues, identifier_or_id) do
+              %Issue{} = issue ->
+                cond do
+                  MapSet.member?(state.pending_commands, issue.id) or
+                    MapSet.member?(state.pending_commands, issue.identifier) ->
+                    {:reply, {:error, :pending_command_in_flight}, state}
 
-              notify_dashboard()
-              {:reply, {:ok, %{issue_id: issue.id, issue_identifier: issue.identifier, status: "dispatched"}}, new_state}
-            else
-              {:reply, {:error, :not_dispatchable}, state}
+                  true ->
+                    active_states = active_state_set()
+                    terminal_states = terminal_state_set()
+
+                    if should_dispatch_issue?(issue, state, active_states, terminal_states) do
+                      new_state = dispatch_issue(state, issue)
+
+                      SymphonyElixir.Observability.emit(:issue_dispatched, %{
+                        issue_id: issue.id,
+                        issue_identifier: issue.identifier,
+                        message: "Manual dispatch via control API"
+                      })
+
+                      notify_dashboard()
+                      {:reply, {:ok, %{issue_id: issue.id, issue_identifier: issue.identifier, status: "dispatched"}}, new_state}
+                    else
+                      {:reply, {:error, :not_dispatchable}, state}
+                    end
+                end
+
+              nil ->
+                {:reply, {:error, :issue_not_found}, state}
             end
 
-          nil ->
-            {:reply, {:error, :issue_not_found}, state}
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
         end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
     end
   end
 
   def handle_call({:retry_issue, identifier_or_id}, _from, state) do
-    case Tracker.mark_for_retry(to_string(identifier_or_id)) do
-      :ok ->
-        new_state = schedule_tick(state, 0)
+    target = to_string(identifier_or_id)
 
-        SymphonyElixir.Observability.emit(:retry_scheduled, %{
-          issue_identifier: to_string(identifier_or_id),
-          message: "Retry requested via control API"
-        })
+    cond do
+      command_target_pending?(state, target) ->
+        {:reply, {:error, :pending_command_in_flight}, state}
 
-        notify_dashboard()
-        {:reply, {:ok, %{status: "retry_scheduled"}}, new_state}
+      true ->
+        case Tracker.mark_for_retry(target) do
+          :ok ->
+            new_state = schedule_tick(state, 0)
 
-      {:error, :unsupported} ->
-        {:reply, {:error, :unsupported}, state}
+            SymphonyElixir.Observability.emit(:retry_scheduled, %{
+              issue_identifier: target,
+              message: "Retry requested via control API"
+            })
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+            notify_dashboard()
+            {:reply, {:ok, %{status: "retry_scheduled"}}, new_state}
+
+          {:error, :unsupported} ->
+            {:reply, {:error, :unsupported}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
     end
   end
 
@@ -1331,6 +1405,39 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  # Spawn a supervised, non-linked task that calls back into the
+  # orchestrator with the result. Using `Task.Supervisor.start_child`
+  # (rather than `start_link`) means a crash in the tracker call cannot
+  # take down the orchestrator, and `gh` CLI now has its own timeout
+  # via `GitHub.CLI.run_with_timeout/2`.
+  defp spawn_clear_running_label(issue_id, identifier, identifier_or_id) do
+    parent = self()
+    target = to_string(identifier_or_id)
+
+    Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+      result =
+        try do
+          Tracker.update_issue_state(target, "open")
+        rescue
+          error -> {:error, {:rescued, Exception.message(error)}}
+        catch
+          :exit, reason -> {:error, {:exit, reason}}
+        end
+
+      send(parent, {:pending_command_completed, issue_id, identifier, result})
+    end)
+
+    :ok
+  end
+
+  # A command targets a "pending" issue when the user-supplied
+  # identifier-or-id matches anything currently locked. We track both
+  # forms in `pending_commands` (see `:stop_issue` handler) so this
+  # single membership check works for either input.
+  defp command_target_pending?(%State{pending_commands: pending}, target) do
+    MapSet.size(pending) > 0 and MapSet.member?(pending, target)
   end
 
   defp find_running_by_identifier(%State{running: running}, identifier_or_id) do

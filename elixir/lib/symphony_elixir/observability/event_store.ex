@@ -95,12 +95,26 @@ defmodule SymphonyElixir.Observability.EventStore do
   @doc """
   Return the most recent events optionally filtered by `:since` (ISO 8601 or
   event id), `:type`, `:issue_identifier`, `:session_id`, and `:limit`.
+
+  `timeout` bounds the underlying `GenServer.call`. SSE replay paths pass
+  a short timeout so a reconnect storm cannot stack 5s default-timeout
+  queries on the EventStore mailbox; on timeout the query returns `[]`.
   """
-  @spec query(map() | keyword(), GenServer.server()) :: [Event.t()]
-  def query(filters \\ %{}, server \\ __MODULE__) do
+  @spec query(map() | keyword(), GenServer.server(), timeout()) :: [Event.t()]
+  def query(filters \\ %{}, server \\ __MODULE__, timeout \\ 5_000)
+
+  def query(filters, server, timeout) do
     case GenServer.whereis(server) do
-      pid when is_pid(pid) -> GenServer.call(pid, {:query, normalize_filters(filters)})
-      _ -> []
+      pid when is_pid(pid) ->
+        try do
+          GenServer.call(pid, {:query, normalize_filters(filters)}, timeout)
+        catch
+          :exit, {:timeout, _} -> []
+          :exit, _ -> []
+        end
+
+      _ ->
+        []
     end
   end
 
@@ -452,8 +466,17 @@ defmodule SymphonyElixir.Observability.EventStore do
       _ ->
         # Treat as event id high-water mark.
         case Enum.split_while(events, fn %Event{id: id} -> id != since end) do
-          {_before, [_match | rest]} -> rest
-          _ -> events
+          # Found the id; replay only what came after it.
+          {_before, [_match | rest]} ->
+            rest
+
+          # `since` was given but the id is no longer in the ring buffer
+          # (eviction or restart). Returning the entire filtered list
+          # would re-flood reconnecting clients with already-seen events
+          # and inflate their dedupe sets. Return [] instead so the
+          # client falls back to its existing state via `/api/v1/events`.
+          _ ->
+            []
         end
     end
   end

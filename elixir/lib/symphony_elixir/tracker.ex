@@ -20,20 +20,25 @@ defmodule SymphonyElixir.Tracker do
   @callback list_managed_issues() :: {:ok, [term()]} | {:error, term()}
 
   @doc """
-  Apply a tracker-side "block" semantics (e.g. add the configured `blocked`
-  label) to `issue_id`. Adapters that cannot represent blocking should
-  return `{:error, :unsupported}`.
+  Mark `issue_id` as blocked from dispatch consideration. The adapter
+  decides how — GitHub adds a configured label, Linear may move the
+  issue to a `Blocked` workflow state, an in-memory adapter can flip a
+  flag. Adapters that cannot represent "blocked" return
+  `{:error, :unsupported}`.
   """
   @callback block_issue(String.t()) :: :ok | {:error, term()}
 
   @doc """
-  Reverse a previous `block_issue/1`.
+  Reverse a previous `block_issue/1` so the issue becomes a dispatch
+  candidate again.
   """
   @callback unblock_issue(String.t()) :: :ok | {:error, term()}
 
   @doc """
-  Mark `issue_id` for retry: clear failed/done/review labels and remove
-  `running` so the orchestrator picks it up again.
+  Reset the adapter-side bookkeeping for `issue_id` so the orchestrator
+  re-claims it on the next poll. Concretely: any state the adapter uses
+  to mark "currently running" or "terminal" (labels in GitHub, workflow
+  states in Linear) should be cleared.
   """
   @callback mark_for_retry(String.t()) :: :ok | {:error, term()}
 

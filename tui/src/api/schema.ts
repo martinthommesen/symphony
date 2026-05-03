@@ -148,6 +148,17 @@ export function parseIssuesList(value: unknown): IssuesListPayload {
   };
 }
 
+function parseTokenTotals(value: unknown): TokenTotals | undefined {
+  const obj = asObject(value);
+  if (!obj) return undefined;
+  return {
+    input_tokens: asNumber(obj.input_tokens, 0),
+    output_tokens: asNumber(obj.output_tokens, 0),
+    total_tokens: asNumber(obj.total_tokens, 0),
+    tokens_per_second: asNullableNumber(obj.tokens_per_second) ?? undefined,
+  };
+}
+
 export function parseRunningEntry(value: unknown): RunningEntry | null {
   const obj = asObject(value);
   if (!obj) return null;
@@ -164,7 +175,7 @@ export function parseRunningEntry(value: unknown): RunningEntry | null {
     started_at: asNullableString(obj.started_at),
     last_event_at: asNullableString(obj.last_event_at),
     runtime_seconds: asNullableNumber(obj.runtime_seconds) ?? undefined,
-    tokens: (asObject(obj.tokens) ?? undefined) as TokenTotals | undefined,
+    tokens: parseTokenTotals(obj.tokens),
   };
 }
 
@@ -191,10 +202,10 @@ export function parseState(value: unknown): StatePayload {
     counts: (asObject(obj.counts) ?? {}) as Record<string, number>,
     running: asArray(obj.running)
       .map(parseRunningEntry)
-      .filter((entry): entry is RunningEntry => entry !== null),
+      .filter((e): e is RunningEntry => e !== null),
     retrying: asArray(obj.retrying)
       .map(parseRetryEntry)
-      .filter((entry): entry is RetryEntry => entry !== null),
+      .filter((e): e is RetryEntry => e !== null),
     codex_totals: asObject(obj.codex_totals) ?? {},
     rate_limits: obj.rate_limits ?? null,
     polling: asObject(obj.polling) ?? {},
