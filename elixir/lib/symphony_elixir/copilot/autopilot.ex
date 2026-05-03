@@ -136,13 +136,15 @@ defmodule SymphonyElixir.Copilot.Autopilot do
 
     receive do
       {^port, {:data, {:eol, line}}} ->
-        line = Redaction.redact(line)
-        on_message.({:line, line})
-        acc = handle_line(line, acc, copilot, on_message)
-        loop(port, copilot, on_message, %{acc | last_read_at: monotonic_now()})
+        # Prepend any buffered :noeol chunks so multi-chunk lines (> 1 MB) are
+        # assembled correctly before redaction and JSONL parsing. Reset buffer.
+        full_line = Redaction.redact(acc.buffer <> line)
+        on_message.({:line, full_line})
+        acc = handle_line(full_line, acc, copilot, on_message)
+        loop(port, copilot, on_message, %{acc | buffer: "", last_read_at: monotonic_now()})
 
       {^port, {:data, {:noeol, partial}}} ->
-        partial = Redaction.redact(partial)
+        # Accumulate partial data; do NOT redact yet — tokens may span chunks.
         loop(port, copilot, on_message, %{acc | buffer: acc.buffer <> partial, last_read_at: monotonic_now()})
 
       {^port, {:exit_status, status}} ->
