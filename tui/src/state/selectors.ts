@@ -77,11 +77,16 @@ function statePriority(state?: string): string {
 export function eventsForSelectedIssue(state: AppState): EventPayload[] {
   const target = selectedIssue(state);
   if (!target) return state.events;
+  // Match by any of the identifiers present on both the projection and
+  // the event. We deliberately don't try to match `session_id` here:
+  // the projection doesn't carry one, and the previous form compared
+  // session_id against workspace_path — a typo that produced spurious
+  // matches when both happened to be null.
   return state.events.filter(
     (e) =>
-      e.issue_identifier === target.issue_identifier ||
-      e.issue_id === target.issue_id ||
-      e.session_id === target?.workspace_path,
+      (e.issue_identifier != null && e.issue_identifier === target.issue_identifier) ||
+      (e.issue_id != null && e.issue_id === target.issue_id) ||
+      (e.workspace_path != null && e.workspace_path === target.workspace_path),
   );
 }
 

@@ -231,7 +231,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   @spec control(Conn.t(), map()) :: Conn.t()
   def control(conn, params) do
     with :ok <- authorize(conn) do
-      command = command_atom(params["command"] || conn.path_info |> List.last())
+      command = command_atom(params["command"] || List.last(conn.path_info))
 
       case Control.execute(command, params, orchestrator: orchestrator()) do
         {:ok, payload} ->

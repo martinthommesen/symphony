@@ -61,18 +61,34 @@ export function redactDeep<T>(value: T): T {
 }
 
 export function containsSecret(value: string): boolean {
-  if (PATTERNS.some((re) => re.test(value))) return true;
-  // Reset lastIndex on global regexes after .test().
-  for (const re of PATTERNS) re.lastIndex = 0;
-  if (AUTH_HEADER_RE.test(value)) {
+  // Each `.test()` call advances `lastIndex` on global regexes. Reset
+  // unconditionally — including on early returns — so subsequent calls
+  // produce stable results.
+  let found = false;
+  try {
+    for (const re of PATTERNS) {
+      if (re.test(value)) {
+        found = true;
+        break;
+      }
+    }
+    if (!found && AUTH_HEADER_RE.test(value)) {
+      found = true;
+    }
+    if (!found) {
+      for (const { re } of ENV_PATTERNS) {
+        if (re.test(value)) {
+          found = true;
+          break;
+        }
+      }
+    }
+    return found;
+  } finally {
+    for (const re of PATTERNS) re.lastIndex = 0;
     AUTH_HEADER_RE.lastIndex = 0;
-    return true;
+    for (const { re } of ENV_PATTERNS) re.lastIndex = 0;
   }
-  return ENV_PATTERNS.some(({ re }) => {
-    const matched = re.test(value);
-    re.lastIndex = 0;
-    return matched;
-  });
 }
 
 export const PLACEHOLDER_TEXT = PLACEHOLDER;
