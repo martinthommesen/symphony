@@ -201,7 +201,13 @@ workspace:
 hooks:
   after_create: |
     git clone "\$SOURCE_REPO_URL" .
-    git checkout -b "symphony/issue-\${ISSUE_NUMBER}"
+    BRANCH="symphony/issue-\${ISSUE_NUMBER}"
+    git fetch origin "\$BRANCH" || true
+    if git rev-parse --verify --quiet "refs/remotes/origin/\$BRANCH" >/dev/null; then
+      git checkout -B "\$BRANCH" "origin/\$BRANCH"
+    else
+      git checkout -B "\$BRANCH"
+    fi
   before_run: |
     git status --short
   after_run: |

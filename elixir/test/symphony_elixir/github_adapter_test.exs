@@ -69,6 +69,13 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
     test "issues with the failed label are eligible when retry_failed is true" do
       assert Adapter.eligible?(issue("open", ["symphony", "symphony/failed"]), tracker_settings(%{retry_failed: true}))
     end
+
+    test "empty active_labels disables label gating instead of rejecting all issues" do
+      assert Adapter.eligible?(issue("open", []), tracker_settings(%{active_labels: []}))
+      assert Adapter.eligible?(issue("open", ["random"]), tracker_settings(%{active_labels: []}))
+      refute Adapter.eligible?(issue("closed", []), tracker_settings(%{active_labels: []}))
+      refute Adapter.eligible?(issue("open", ["symphony/blocked"]), tracker_settings(%{active_labels: []}))
+    end
   end
 
   describe "label_state/2" do

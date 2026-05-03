@@ -161,9 +161,11 @@ defmodule SymphonyElixir.GitHub.Adapter do
     label_set = MapSet.new(issue.labels)
     state = String.downcase(issue.state || "")
 
+    active_labels = List.wrap(tracker.active_labels)
+
     cond do
       state != "open" -> false
-      not has_any?(label_set, tracker.active_labels) -> false
+      active_labels != [] and not has_any?(label_set, active_labels) -> false
       has_any?(label_set, tracker.blocked_labels) -> false
       MapSet.member?(label_set, tracker.running_label) -> false
       MapSet.member?(label_set, tracker.review_label) -> false
@@ -279,28 +281,30 @@ defmodule SymphonyElixir.GitHub.Adapter do
   end
 
   defp list_open_issues(repo, labels) do
+    # Use `gh api --paginate` so repos with >200 candidate issues are not
+    # silently truncated. The REST endpoint returns full issue payloads
+    # (including `pull_request` for PRs, which `Issue.from_gh_payload/1`
+    # filters out).
     repo = CLI.assert_repo!(repo)
-    label_args = Enum.flat_map(labels, fn label -> ["--label", label] end)
 
-    args =
-      ["issue", "list", "--repo", repo, "--state", "open", "--json",
-       "number,title,body,labels,assignees,createdAt,updatedAt,url,state",
-       "--limit", "200"] ++ label_args
+    base_path = "repos/#{repo}/issues?state=open&per_page=100"
 
-    case CLI.run(args) do
+    path =
+      case labels do
+        [] -> base_path
+        labels -> base_path <> "&labels=" <> URI.encode(Enum.join(labels, ","))
+      end
+
+    case CLI.run(["api", "--paginate", path]) do
       {:ok, body} ->
-        case Jason.decode(body) do
-          {:ok, decoded} when is_list(decoded) ->
+        case decode_paginated_issues(body) do
+          {:ok, decoded} ->
             issues =
               decoded
-              |> Enum.map(&normalize_gh_list_entry/1)
               |> Enum.map(&Issue.from_gh_payload/1)
               |> Enum.reject(&is_nil/1)
 
             {:ok, issues}
-
-          {:ok, _} ->
-            {:ok, []}
 
           {:error, reason} ->
             {:error, {:gh_decode_error, reason}}
@@ -311,13 +315,24 @@ defmodule SymphonyElixir.GitHub.Adapter do
     end
   end
 
-  defp normalize_gh_list_entry(entry) when is_map(entry) do
-    entry
-    |> Map.put("html_url", entry["url"] || entry["html_url"])
-    |> Map.put("description", entry["body"])
-    |> Map.put("created_at", entry["createdAt"])
-    |> Map.put("updated_at", entry["updatedAt"])
-    |> Map.put("body", entry["body"] || "")
+  # `gh api --paginate` concatenates one JSON array per page back-to-back
+  # ("[{...}][{...}]"). The top-level `][` boundary cannot appear inside any
+  # JSON string value without being escaped, so we rewrite those boundaries
+  # to `,` and parse the result as a single JSON array.
+  defp decode_paginated_issues(body) when is_binary(body) do
+    case String.trim(body) do
+      "" ->
+        {:ok, []}
+
+      trimmed ->
+        merged = Regex.replace(~r/\]\s*\[/, trimmed, ",")
+
+        case Jason.decode(merged) do
+          {:ok, entries} when is_list(entries) -> {:ok, entries}
+          {:ok, _} -> {:ok, []}
+          {:error, reason} -> {:error, reason}
+        end
+    end
   end
 
   defp fetch_issue_for_id(repo, id, tracker) do

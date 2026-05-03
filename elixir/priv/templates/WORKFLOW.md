@@ -23,9 +23,21 @@ workspace:
   root: "$HOME/.cache/symphony-copilot/workspaces"
 
 hooks:
+  # `after_create` must be idempotent across reruns. If the remote already
+  # has a `symphony/issue-<N>` branch (e.g. from a previous failed or
+  # successful run), check it out instead of creating a new branch from
+  # the default branch. Pushing the same branch from a fresh checkout is
+  # rejected as non-fast-forward, so reruns must continue from the remote
+  # tip.
   after_create: |
     git clone "$SOURCE_REPO_URL" .
-    git checkout -b "symphony/issue-${ISSUE_NUMBER}"
+    BRANCH="symphony/issue-${ISSUE_NUMBER}"
+    git fetch origin "$BRANCH" || true
+    if git rev-parse --verify --quiet "refs/remotes/origin/$BRANCH" >/dev/null; then
+      git checkout -B "$BRANCH" "origin/$BRANCH"
+    else
+      git checkout -B "$BRANCH"
+    fi
   before_run: |
     git status --short
   after_run: |
