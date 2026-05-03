@@ -59,8 +59,7 @@ defmodule SymphonyElixirWeb.Plugs.RequireBearer do
         if Control.loopback_only?() do
           :allow
         else
-          {:reject, 403, "control_disabled",
-           "Control endpoints are disabled (no token configured) and the server is not bound to a loopback address."}
+          {:reject, 403, "control_disabled", "Control endpoints are disabled (no token configured) and the server is not bound to a loopback address."}
         end
 
       {:error, :missing_token} ->

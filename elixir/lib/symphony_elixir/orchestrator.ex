@@ -230,9 +230,7 @@ defmodule SymphonyElixir.Orchestrator do
         :ok
 
       {:error, reason} ->
-        Logger.warning(
-          "Orchestrator pending command for issue_id=#{issue_id} failed: #{inspect(reason)}"
-        )
+        Logger.warning("Orchestrator pending command for issue_id=#{issue_id} failed: #{inspect(reason)}")
     end
 
     pending =
@@ -1335,7 +1333,7 @@ defmodule SymphonyElixir.Orchestrator do
               %Issue{} = issue ->
                 cond do
                   MapSet.member?(state.pending_commands, issue.id) or
-                    MapSet.member?(state.pending_commands, issue.identifier) ->
+                      MapSet.member?(state.pending_commands, issue.identifier) ->
                     {:reply, {:error, :pending_command_in_flight}, state}
 
                   true ->

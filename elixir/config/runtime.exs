@@ -17,8 +17,7 @@ if config_env() == :prod do
       must always provide a per-environment secret here.
       """
 
-  config :symphony_elixir, SymphonyElixirWeb.Endpoint,
-    secret_key_base: secret_key_base
+  config :symphony_elixir, SymphonyElixirWeb.Endpoint, secret_key_base: secret_key_base
 end
 
 # `SYMPHONY_ALLOWED_ORIGINS` overrides the default loopback allowlist

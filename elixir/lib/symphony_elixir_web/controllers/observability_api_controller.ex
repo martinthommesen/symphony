@@ -162,9 +162,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
       mailbox_len() > @sse_max_mailbox ->
         drained = drain_observability_events(@sse_drain_target)
 
-        Logger.warning(
-          "SSE consumer slow; mailbox dropped=#{drained} cumulative=#{dropped + drained}"
-        )
+        Logger.warning("SSE consumer slow; mailbox dropped=#{drained} cumulative=#{dropped + drained}")
 
         sse_loop(conn, filters, heartbeat_ref, dropped + drained, deadline_ms)
 
