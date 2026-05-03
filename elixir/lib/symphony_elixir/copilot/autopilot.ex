@@ -136,34 +136,52 @@ defmodule SymphonyElixir.Copilot.Autopilot do
 
     receive do
       {^port, {:data, {:eol, line}}} ->
-        # Prepend any buffered :noeol chunks so multi-chunk lines (> 1 MB) are
-        # assembled correctly before redaction and JSONL parsing. Reset buffer.
-        full_line = Redaction.redact(acc.buffer <> line)
-        on_message.({:line, full_line})
-        acc = handle_line(full_line, acc, copilot, on_message)
-        loop(port, copilot, on_message, %{acc | buffer: "", last_read_at: monotonic_now()})
+        acc = process_eol(line, acc, copilot, on_message)
+        loop(port, copilot, on_message, %{acc | last_read_at: monotonic_now()})
 
       {^port, {:data, {:noeol, partial}}} ->
         # Accumulate partial data; do NOT redact yet — tokens may span chunks.
         loop(port, copilot, on_message, %{acc | buffer: acc.buffer <> partial, last_read_at: monotonic_now()})
 
       {^port, {:exit_status, status}} ->
+        # Flush any trailing :noeol buffer that the process emitted without a
+        # terminal newline. Otherwise the last line is silently dropped.
+        acc = flush_trailing_buffer(acc, copilot, on_message)
         finalize_result(:completed, status, copilot, acc)
     after
       timeout ->
         cond do
           monotonic_now() >= acc.deadline_at ->
             kill_port(port)
+            acc = flush_trailing_buffer(acc, copilot, on_message)
             finalize_result(:timeout, nil, copilot, acc)
 
           stall_triggered?(copilot.stall_timeout_ms, acc.last_read_at) ->
             kill_port(port)
+            acc = flush_trailing_buffer(acc, copilot, on_message)
             finalize_result(:stalled, nil, copilot, acc)
 
           true ->
             loop(port, copilot, on_message, acc)
         end
     end
+  end
+
+  # Prepend any buffered :noeol chunks so multi-chunk lines (> @port_line_bytes)
+  # are assembled correctly before redaction and JSONL parsing. Reset buffer.
+  @doc false
+  @spec process_eol(binary(), map(), map(), (any() -> any())) :: map()
+  def process_eol(line, acc, copilot, on_message) when is_binary(line) and is_map(acc) do
+    full_line = Redaction.redact(acc.buffer <> line)
+    on_message.({:line, full_line})
+    acc = handle_line(full_line, acc, copilot, on_message)
+    %{acc | buffer: ""}
+  end
+
+  defp flush_trailing_buffer(%{buffer: ""} = acc, _copilot, _on_message), do: acc
+
+  defp flush_trailing_buffer(acc, copilot, on_message) do
+    process_eol("", acc, copilot, on_message)
   end
 
   # `stall_timeout_ms == 0` disables stall detection entirely, matching the

@@ -72,6 +72,84 @@ defmodule SymphonyElixir.Copilot.AutopilotTest do
     end
   end
 
+  describe "process_eol/4 line assembly" do
+    defp empty_acc do
+      %{messages: [], raw_lines: [], buffer: "", last_read_at: 0, deadline_at: 0}
+    end
+
+    defp collector do
+      pid = self()
+      fn msg -> send(pid, {:on_message, msg}) end
+    end
+
+    defp drain_messages do
+      receive do
+        {:on_message, msg} -> [msg | drain_messages()]
+      after
+        0 -> []
+      end
+    end
+
+    test "assembles a single :noeol + :eol pair into one logical line" do
+      copilot = default_copilot(%{output_format: "json"})
+      acc = %{empty_acc() | buffer: ~s({"event":"hel)}
+
+      acc = Autopilot.process_eol(~s(lo"}), acc, copilot, collector())
+
+      assert acc.buffer == ""
+      assert acc.messages == [%{"event" => "hello"}]
+      assert hd(acc.raw_lines) =~ ~s({"event":"hello"})
+
+      [msg] = drain_messages()
+      assert {:line, ~s({"event":"hello"})} = msg
+    end
+
+    test "assembles multiple :noeol chunks then :eol" do
+      copilot = default_copilot(%{output_format: "json"})
+
+      # Simulate three :noeol chunks then :eol.
+      acc =
+        empty_acc()
+        |> Map.update!(:buffer, fn _ -> ~s({"a":) end)
+        |> then(&%{&1 | buffer: &1.buffer <> ~s(1,"b":)})
+        |> then(&%{&1 | buffer: &1.buffer <> ~s("two")})
+
+      acc = Autopilot.process_eol("}", acc, copilot, collector())
+
+      assert acc.buffer == ""
+      assert acc.messages == [%{"a" => 1, "b" => "two"}]
+    end
+
+    test "buffer reset prevents carry-over into subsequent lines" do
+      copilot = default_copilot(%{output_format: "json"})
+
+      acc = Autopilot.process_eol(~s({"first":1}), %{empty_acc() | buffer: ""}, copilot, collector())
+      assert acc.buffer == ""
+
+      # Next line must NOT carry the previous content.
+      acc = Autopilot.process_eol(~s({"second":2}), acc, copilot, collector())
+      assert acc.buffer == ""
+
+      assert acc.messages == [%{"second" => 2}, %{"first" => 1}]
+    end
+
+    test "redaction is applied once per assembled line, not per chunk" do
+      copilot = default_copilot(%{output_format: "text"})
+
+      # The token spans the chunk boundary; redacting per chunk would miss it.
+      first_chunk = "Authorization: Bearer abcdefgh"
+      second_chunk = "ijklmnop0123456789"
+
+      acc = %{empty_acc() | buffer: first_chunk}
+      acc = Autopilot.process_eol(second_chunk, acc, copilot, collector())
+
+      [{:line, line}] = drain_messages()
+      refute line =~ "abcdefghijklmnop0123456789"
+      assert line =~ "[REDACTED]"
+      assert line =~ "Authorization:"
+    end
+  end
+
   describe "stall_triggered?/2" do
     # `stall_timeout_ms == 0` must disable stall detection rather than fire
     # immediately. Otherwise every run is killed as :stalled on the first
