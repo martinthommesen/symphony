@@ -3,6 +3,12 @@
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 
+> **Default stack:** GitHub Issues + GitHub Copilot CLI (autopilot mode).
+> See the top-level [README](../README.md#github-issues--copilot-cli-quickstart)
+> for setup, and [MIGRATION_NOTES.md](../MIGRATION_NOTES.md) for the
+> Linear→GitHub migration mapping. The Linear/Codex modules are retained for
+> backwards compatibility (see [legacy/README.md](legacy/README.md)).
+
 > [!WARNING]
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
 > We recommend implementing your own hardened version based on `SPEC.md`.
