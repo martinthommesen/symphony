@@ -313,36 +313,60 @@ defmodule SymphonyElixir.Observability.EventStore do
 
   defp trim_to_buffer_size(state), do: state
 
-  defp load_recent_lines(path, size) do
-    case File.read(path) do
-      {:ok, contents} ->
-        lines =
-          contents
-          |> String.split("\n", trim: true)
-          |> Enum.take(-size)
+  defp load_recent_lines(path, size) when is_integer(size) and size > 0 do
+    # Stream the JSONL file line-by-line and keep only the last `size`
+    # items in a bounded queue. This is O(size) memory regardless of
+    # total file size — long-running deployments can accumulate very
+    # large logs, and the previous `File.read/1 + Enum.take(-size)` form
+    # held the entire file in memory at startup.
+    try do
+      tail_queue =
+        path
+        |> File.stream!([], :line)
+        |> Enum.reduce(:queue.new(), fn line, queue ->
+          queue = :queue.in(line, queue)
+          if :queue.len(queue) > size do
+            {_, q} = :queue.out(queue)
+            q
+          else
+            queue
+          end
+        end)
 
-        events =
-          lines
-          |> Enum.flat_map(fn line ->
-            case Jason.decode(line) do
-              {:ok, payload} ->
-                case payload_to_event(payload) do
-                  %Event{} = event -> [event]
-                  _ -> []
-                end
+      events =
+        tail_queue
+        |> :queue.to_list()
+        |> Enum.flat_map(&decode_jsonl_line/1)
 
-              {:error, reason} ->
-                Logger.debug("Skipping malformed JSONL line (#{inspect(reason)})")
-                []
-            end
-          end)
-
-        {:ok, events}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, events}
+    rescue
+      error -> {:error, error}
     end
   end
+
+  defp load_recent_lines(_path, _size), do: {:ok, []}
+
+  defp decode_jsonl_line(line) when is_binary(line) do
+    case String.trim_trailing(line, "\n") do
+      "" ->
+        []
+
+      trimmed ->
+        case Jason.decode(trimmed) do
+          {:ok, payload} ->
+            case payload_to_event(payload) do
+              %Event{} = event -> [event]
+              _ -> []
+            end
+
+          {:error, reason} ->
+            Logger.debug("Skipping malformed JSONL line (#{inspect(reason)})")
+            []
+        end
+    end
+  end
+
+  defp decode_jsonl_line(_line), do: []
 
   defp payload_to_event(payload) when is_map(payload) do
     timestamp =
