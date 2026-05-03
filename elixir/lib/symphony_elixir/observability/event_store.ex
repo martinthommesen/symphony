@@ -103,6 +103,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   @spec query(map() | keyword(), GenServer.server(), timeout()) :: [Event.t()]
   def query(filters \\ %{}, server \\ __MODULE__, timeout \\ 5_000)
 
+  @spec query(map() | keyword(), GenServer.server(), timeout()) :: [Event.t()]
   def query(filters, server, timeout) do
     case GenServer.whereis(server) do
       pid when is_pid(pid) ->
