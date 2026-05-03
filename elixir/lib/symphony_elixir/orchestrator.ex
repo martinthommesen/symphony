@@ -1442,7 +1442,13 @@ defmodule SymphonyElixir.Orchestrator do
         :stalled -> :agent_stalled
         :timed_out -> :agent_timed_out
         :token_delta -> :agent_token_delta
-        atom when is_atom(atom) -> ("agent_" <> Atom.to_string(atom)) |> String.to_atom()
+        # Unknown event names are passed through as strings. Calling
+        # `String.to_atom/1` on user/library-supplied data would leak
+        # atoms (atoms are not GC'd) and is a DoS risk if upstream
+        # starts emitting variable event names. The Event struct accepts
+        # binary types and the SSE/JSON layer serialises both forms.
+        atom when is_atom(atom) -> "agent_" <> Atom.to_string(atom)
+        binary when is_binary(binary) -> "agent_" <> binary
         _ -> :agent_stream_line
       end
 
