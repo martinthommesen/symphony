@@ -37,20 +37,17 @@ defmodule SymphonyElixirWeb.Router do
   end
 
   # `/api/v1/health` stays public so capability discovery, monitoring
-  # probes, and readiness checks work without a token. All other
-  # observability endpoints — including the SSE stream — flow through
-  # `:control_auth` below.
+  # probes, and readiness checks work without a token.
   scope "/", SymphonyElixirWeb do
     get("/api/v1/health", ObservabilityApiController, :health)
   end
 
+  # Authenticated handlers for the typed observability + control routes.
+  # Anything mutating goes here; reads are also gated so a non-loopback
+  # bind without a token can't enumerate operational data.
   scope "/", SymphonyElixirWeb do
     pipe_through(:control_auth)
 
-    # Fixed observability/control routes are declared before the dynamic
-    # `/api/v1/:issue_identifier` path so they take precedence. Ordering
-    # here is significant: do not move `:issue_identifier` above any of
-    # these.
     get("/api/v1/state", ObservabilityApiController, :state)
     get("/api/v1/issues", ObservabilityApiController, :issues)
     get("/api/v1/issues/:issue_identifier", ObservabilityApiController, :issue)
@@ -59,16 +56,14 @@ defmodule SymphonyElixirWeb.Router do
     get("/api/v1/analytics", ObservabilityApiController, :analytics)
     post("/api/v1/refresh", ObservabilityApiController, :refresh)
     post("/api/v1/control/:command", ObservabilityApiController, :control)
-
-    # Legacy/dynamic issue endpoint last so it doesn't capture
-    # /api/v1/{issues,events,analytics,health,refresh,control}.
-    get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)
   end
 
-  # Method-not-allowed fallbacks must remain outside the auth pipeline so
-  # that, e.g., `GET /api/v1/refresh` reports 405 rather than 401. Phoenix
-  # matches routes in declaration order, so the typed handlers above win
-  # for the methods they accept; everything else falls through here.
+  # Method-not-allowed fallbacks for the typed paths above. These must
+  # be declared BEFORE the dynamic `/api/v1/:issue_identifier` route so
+  # that, e.g., `GET /api/v1/refresh` returns 405 rather than being
+  # captured by the dynamic catchall and 404'd as `issue_not_found`.
+  # They live outside the auth pipeline so wrong-method requests don't
+  # leak a 401 instead of 405.
   scope "/", SymphonyElixirWeb do
     match(:*, "/api/v1/health", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)
@@ -80,6 +75,17 @@ defmodule SymphonyElixirWeb.Router do
     match(:*, "/api/v1/refresh", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/control/:command", ObservabilityApiController, :method_not_allowed)
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
+  end
+
+  # Dynamic single-issue endpoint last so it doesn't capture
+  # /api/v1/{issues,events,analytics,health,refresh,control}.
+  scope "/", SymphonyElixirWeb do
+    pipe_through(:control_auth)
+
+    get("/api/v1/:issue_identifier", ObservabilityApiController, :issue)
+  end
+
+  scope "/", SymphonyElixirWeb do
     match(:*, "/api/v1/:issue_identifier", ObservabilityApiController, :method_not_allowed)
     match(:*, "/*path", ObservabilityApiController, :not_found)
   end
