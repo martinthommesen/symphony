@@ -54,6 +54,17 @@ defmodule SymphonyElixir.Copilot.AutopilotTest do
       refute "--no-ask-user" in argv
     end
 
+    test "omits --yolo unless permission_mode is yolo" do
+      ask_argv = Autopilot.build_argv(default_copilot(%{permission_mode: "ask"}), "p")
+      refute "--yolo" in ask_argv
+
+      restricted_argv = Autopilot.build_argv(default_copilot(%{permission_mode: "restricted"}), "p")
+      refute "--yolo" in restricted_argv
+
+      yolo_argv = Autopilot.build_argv(default_copilot(%{permission_mode: "yolo"}), "p")
+      assert "--yolo" in yolo_argv
+    end
+
     test "passes prompt as the final two argv entries (argv-only, never shell)" do
       argv = Autopilot.build_argv(default_copilot(), "prompt with $shell `chars`")
       assert List.last(argv) == "prompt with $shell `chars`"

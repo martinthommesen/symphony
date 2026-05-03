@@ -19,6 +19,11 @@ defmodule SymphonyElixir.GitHubConfigTest do
     assert settings.tracker.failed_label == "symphony/failed"
     assert settings.tracker.done_label == "symphony/done"
     assert settings.tracker.retry_failed == false
+    # Defaults must match the github-adapter-derived state strings so
+    # orchestrator dispatch (active_states) and continuation (terminal_states)
+    # actually fire under the generated default config.
+    assert settings.tracker.active_states == ["open"]
+    assert settings.tracker.terminal_states == ["closed"]
   end
 
   test "copilot defaults are autopilot/yolo/json with sane timeouts" do

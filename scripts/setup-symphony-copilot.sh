@@ -194,6 +194,9 @@ tracker:
   failed_label: symphony/failed
   review_label: symphony/review
   retry_failed: false
+  # Match the GitHub adapter's derived state strings.
+  active_states: [open]
+  terminal_states: [closed]
 
 workspace:
   root: "\$HOME/.cache/symphony-copilot/workspaces"

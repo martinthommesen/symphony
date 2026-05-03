@@ -51,9 +51,14 @@ defmodule SymphonyElixir.Copilot.Autopilot do
     base =
       [
         "--autopilot",
-        "--yolo",
         "--max-autopilot-continues=#{copilot.max_autopilot_continues}"
       ]
+
+    base =
+      case copilot.permission_mode do
+        "yolo" -> base ++ ["--yolo"]
+        _ -> base
+      end
 
     base =
       if copilot.no_ask_user, do: base ++ ["--no-ask-user"], else: base

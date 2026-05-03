@@ -50,8 +50,17 @@ defmodule SymphonyElixir.Config.Schema do
       field(:api_key, :string)
       field(:project_slug, :string)
       field(:assignee, :string)
-      field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
-      field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      # Defaults are GitHub-shaped because the default tracker is `github`.
+      # The orchestrator dispatches issues whose state is in `active_states`
+      # and considers `terminal_states` complete. The GitHub adapter emits
+      # states like `"open"`, `"running"`, `"review"`, `"failed"`, `"done"`,
+      # `"blocked"`, and `"closed"`; only fresh `"open"` issues are eligible
+      # to be claimed.
+      #
+      # Linear backwards-compatible deployments must override these in
+      # WORKFLOW.md (`tracker.active_states`, `tracker.terminal_states`).
+      field(:active_states, {:array, :string}, default: ["open"])
+      field(:terminal_states, {:array, :string}, default: ["closed"])
       field(:repo, :string)
       field(:active_labels, {:array, :string}, default: ["symphony"])
       field(:blocked_labels, {:array, :string}, default: ["symphony/blocked"])

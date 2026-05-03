@@ -295,9 +295,13 @@ defmodule SymphonyElixir.GitHub.Adapter do
         labels -> base_path <> "&labels=" <> URI.encode(Enum.join(labels, ","))
       end
 
-    case CLI.run(["api", "--paginate", path]) do
+    # `--slurp` collects every paginated page into a single outer JSON
+    # array (one element per page) without relying on string-boundary
+    # heuristics. Each element is itself an array of issue payloads, so
+    # we flatten one level after decoding.
+    case CLI.run(["api", "--paginate", "--slurp", path]) do
       {:ok, body} ->
-        case decode_paginated_issues(body) do
+        case decode_slurped_issues(body) do
           {:ok, decoded} ->
             issues =
               decoded
@@ -315,22 +319,25 @@ defmodule SymphonyElixir.GitHub.Adapter do
     end
   end
 
-  # `gh api --paginate` concatenates one JSON array per page back-to-back
-  # ("[{...}][{...}]"). The top-level `][` boundary cannot appear inside any
-  # JSON string value without being escaped, so we rewrite those boundaries
-  # to `,` and parse the result as a single JSON array.
-  defp decode_paginated_issues(body) when is_binary(body) do
+  defp decode_slurped_issues(body) when is_binary(body) do
     case String.trim(body) do
       "" ->
         {:ok, []}
 
       trimmed ->
-        merged = Regex.replace(~r/\]\s*\[/, trimmed, ",")
+        case Jason.decode(trimmed) do
+          {:ok, pages} when is_list(pages) ->
+            {:ok,
+             Enum.flat_map(pages, fn
+               page when is_list(page) -> page
+               _ -> []
+             end)}
 
-        case Jason.decode(merged) do
-          {:ok, entries} when is_list(entries) -> {:ok, entries}
-          {:ok, _} -> {:ok, []}
-          {:error, reason} -> {:error, reason}
+          {:ok, _} ->
+            {:ok, []}
+
+          {:error, reason} ->
+            {:error, reason}
         end
     end
   end

@@ -18,6 +18,8 @@ tracker:
   done_label: symphony/done
   failed_label: symphony/failed
   review_label: symphony/review
+  active_states: [open]
+  terminal_states: [closed]
 
 workspace:
   root: "$HOME/.cache/symphony-copilot/workspaces"
