@@ -233,9 +233,14 @@ defmodule SymphonyElixir.GitHub.Adapter do
   """
   @spec list_comments(String.t(), integer()) :: {:ok, [map()]} | {:error, term()}
   def list_comments(repo, number) when is_integer(number) do
-    case CLI.api("repos/#{CLI.assert_repo!(repo)}/issues/#{number}/comments", ["--paginate"]) do
-      {:ok, comments} when is_list(comments) -> {:ok, comments}
-      {:ok, _} -> {:ok, []}
+    repo = CLI.assert_repo!(repo)
+    path = "repos/#{repo}/issues/#{number}/comments?per_page=100"
+
+    # Use --paginate with --slurp; without --slurp gh writes one JSON array
+    # per page concatenated together, which is not valid JSON for issues
+    # with more than 100 comments.
+    case CLI.run(["api", "--paginate", "--slurp", path]) do
+      {:ok, body} -> decode_slurped_issues(body)
       {:error, reason} -> {:error, reason}
     end
   end

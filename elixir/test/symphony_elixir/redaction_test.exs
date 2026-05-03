@@ -17,10 +17,18 @@ defmodule SymphonyElixir.RedactionTest do
       refute result =~ "github_pat_11ABCDEFG_abc123def456ghi789jkl"
     end
 
-    test "redacts Authorization: Bearer headers" do
+    test "redacts Authorization: Bearer headers but keeps the prefix for log context" do
       input = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789"
       result = Redaction.redact(input)
       assert result =~ "[REDACTED]"
+      assert result =~ "Authorization:"
+      assert result =~ "Bearer "
+      refute result =~ "abcdefghijklmnopqrstuvwxyz"
+    end
+
+    test "redacts plain `Bearer <token>` even without the Authorization label" do
+      input = "header X-Auth: Bearer abcdefghijklmnopqrstuvwxyz123456"
+      result = Redaction.redact(input)
       refute result =~ "abcdefghijklmnopqrstuvwxyz"
     end
 

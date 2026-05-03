@@ -65,6 +65,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
          {:ok, pr_url} <- maybe_open_or_update_pr(repo, issue, run_id, run_summary, finalizer) do
       :ok = comment_on_issue(repo, issue, pr_url, run_summary)
       :ok = Adapter.transition_to(repo, issue.number, "review", tracker)
+      :ok = maybe_close_issue(repo, issue, finalizer)
 
       {:ok,
        %{
@@ -74,6 +75,25 @@ defmodule SymphonyElixir.GitHub.Finalizer do
          summary: run_summary,
          reason: nil
        }}
+    end
+  end
+
+  defp maybe_close_issue(_repo, _issue, %{close_issue: false}), do: :ok
+
+  defp maybe_close_issue(repo, issue, _finalizer) do
+    case CLI.run([
+           "issue",
+           "close",
+           Integer.to_string(issue.number),
+           "--repo",
+           CLI.assert_repo!(repo)
+         ]) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("issue close failed for ##{issue.number}: #{inspect(reason)}")
+        :ok
     end
   end
 
@@ -125,7 +145,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
   end
 
   defp count_commits_ahead(workspace, branch) do
-    base = "origin/HEAD"
+    base = resolve_default_base(workspace)
 
     case System.cmd("git", ["-C", workspace, "rev-list", "--count", "#{base}..#{branch}"],
            stderr_to_stdout: true
@@ -136,20 +156,61 @@ defmodule SymphonyElixir.GitHub.Finalizer do
           _ -> {:ok, 0}
         end
 
-      {_output, _status} ->
-        # Fallback: count commits since the most recent merge-base with main.
-        case System.cmd("git", ["-C", workspace, "rev-list", "--count", "main..#{branch}"],
-               stderr_to_stdout: true
-             ) do
-          {output, 0} ->
-            case Integer.parse(String.trim(output)) do
-              {n, _} -> {:ok, n}
-              _ -> {:ok, 0}
-            end
+      _ ->
+        {:ok, 0}
+    end
+  end
 
-          _ ->
-            {:ok, 0}
+  # Resolve the default branch reference once per call. Tries, in order:
+  #
+  # 1. `git symbolic-ref refs/remotes/origin/HEAD` (works when the local
+  #    clone has a tracking HEAD set on origin)
+  # 2. `gh api repos/<repo>` `.default_branch`
+  # 3. `origin/main` (GitHub's modern default)
+  #
+  # Repos using `master`, `trunk`, or any custom default branch get the
+  # right base via 1 or 2, so the finalizer no longer falsely reports
+  # "no commits produced" on non-`main` repositories.
+  defp resolve_default_base(workspace) do
+    with :error <- resolve_via_symbolic_ref(workspace),
+         :error <- resolve_via_gh_api() do
+      "origin/main"
+    else
+      {:ok, base} -> base
+    end
+  end
+
+  defp resolve_via_symbolic_ref(workspace) do
+    case System.cmd("git", ["-C", workspace, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        case String.trim(output) do
+          "refs/remotes/" <> rest -> {:ok, rest}
+          _ -> :error
         end
+
+      _ ->
+        :error
+    end
+  end
+
+  defp resolve_via_gh_api do
+    repo = Config.settings!().tracker.repo
+
+    if is_binary(repo) do
+      case CLI.run(["api", "repos/#{CLI.assert_repo!(repo)}", "--jq", ".default_branch"]) do
+        {:ok, output} ->
+          case String.trim(output) do
+            "" -> :error
+            branch -> {:ok, "origin/#{branch}"}
+          end
+
+        _ ->
+          :error
+      end
+    else
+      :error
     end
   end
 
@@ -187,41 +248,71 @@ defmodule SymphonyElixir.GitHub.Finalizer do
   defp maybe_open_or_update_pr(repo, issue, run_id, summary, _finalizer) do
     title = "Symphony: #{issue.title}"
     body = pr_body(issue, run_id, summary)
+    repo = CLI.assert_repo!(repo)
 
+    case existing_pr(repo, issue.branch_name) do
+      {:ok, %{"number" => number, "url" => url}} when is_integer(number) ->
+        case CLI.run([
+               "pr",
+               "edit",
+               Integer.to_string(number),
+               "--repo",
+               repo,
+               "--title",
+               title,
+               "--body",
+               body
+             ]) do
+          {:ok, output} -> {:ok, first_url(output) || url || ""}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:ok, nil} ->
+        case CLI.run([
+               "pr",
+               "create",
+               "--repo",
+               repo,
+               "--head",
+               issue.branch_name,
+               "--title",
+               title,
+               "--body",
+               body
+             ]) do
+          {:ok, output} -> {:ok, output |> String.trim() |> first_url() || ""}
+          {:error, {:gh_exit, _status, output}} -> {:error, {:pr_create_failed, output}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Detect an existing PR via `gh pr list --head <branch>`. This is more
+  # robust than string-matching `gh pr create` error output, which varies
+  # across `gh` versions and locales.
+  defp existing_pr(repo, branch) do
     case CLI.run([
            "pr",
-           "create",
+           "list",
            "--repo",
-           CLI.assert_repo!(repo),
+           repo,
            "--head",
-           issue.branch_name,
-           "--title",
-           title,
-           "--body",
-           body
+           branch,
+           "--state",
+           "all",
+           "--json",
+           "number,url",
+           "--limit",
+           "1"
          ]) do
-      {:ok, output} ->
-        {:ok, output |> String.trim() |> first_url() || ""}
-
-      {:error, {:gh_exit, _status, output}} ->
-        if String.contains?(output, "already exists") do
-          # Update existing PR.
-          case CLI.run([
-                 "pr",
-                 "edit",
-                 issue.branch_name,
-                 "--repo",
-                 CLI.assert_repo!(repo),
-                 "--title",
-                 title,
-                 "--body",
-                 body
-               ]) do
-            {:ok, output} -> {:ok, first_url(output) || ""}
-            {:error, reason} -> {:error, reason}
-          end
-        else
-          {:error, {:pr_create_failed, output}}
+      {:ok, body} ->
+        case Jason.decode(body) do
+          {:ok, [pr | _]} when is_map(pr) -> {:ok, pr}
+          {:ok, _} -> {:ok, nil}
+          {:error, reason} -> {:error, {:gh_decode_error, reason}}
         end
 
       {:error, reason} ->

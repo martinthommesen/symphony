@@ -79,6 +79,11 @@ defmodule SymphonyElixir.GitHub.Parser do
 
     [short, cross, url]
     |> List.flatten()
-    |> Enum.map(&String.to_integer/1)
+    |> Enum.flat_map(fn raw ->
+      case Integer.parse(raw) do
+        {n, ""} -> [n]
+        _ -> []
+      end
+    end)
   end
 end

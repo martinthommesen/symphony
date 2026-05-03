@@ -28,8 +28,7 @@ defmodule SymphonyElixir.Redaction do
     # `ghp_` and friends use a 36+ char body. We keep the lower bound at 20
     # to catch test fixtures while still rejecting "ghp_hello".
     ~r/\bgh[oprsu]_[A-Za-z0-9]{20,}/,
-    # Authorization headers: `Authorization: Bearer <token>` or `Bearer <token>`.
-    ~r/(?i)(authorization\s*:\s*)(bearer\s+)?[A-Za-z0-9._\-+\/=]{8,}/,
+    # `Bearer <token>` anywhere (e.g. raw header without label).
     ~r/(?i)\bbearer\s+[A-Za-z0-9._\-+\/=]{16,}/,
     # URLs with embedded credentials: https://user:pw@host/...
     ~r/(https?:\/\/)([^\s:@\/]+):([^\s@\/]+)@/
@@ -50,7 +49,18 @@ defmodule SymphonyElixir.Redaction do
   def redact(value) when is_binary(value) do
     value
     |> redact_env_token_values()
+    |> redact_authorization_headers()
     |> redact_with_patterns()
+  end
+
+  # Keep the `Authorization:` prefix and any `Bearer ` indicator so debug
+  # logs retain context. Only the token body is replaced.
+  defp redact_authorization_headers(value) do
+    Regex.replace(
+      ~r/(?i)(authorization\s*:\s*)(bearer\s+)?[A-Za-z0-9._\-+\/=]{8,}/,
+      value,
+      fn _full, prefix, scheme -> "#{prefix}#{scheme}#{@placeholder}" end
+    )
   end
 
   def redact(value), do: value
@@ -71,6 +81,7 @@ defmodule SymphonyElixir.Redaction do
   @spec contains_secret?(String.t()) :: boolean()
   def contains_secret?(value) when is_binary(value) do
     Enum.any?(@patterns, &Regex.match?(&1, value)) or
+      Regex.match?(~r/(?i)authorization\s*:\s*(bearer\s+)?[A-Za-z0-9._\-+\/=]{8,}/, value) or
       Enum.any?(@sensitive_env_vars, fn name ->
         Regex.match?(token_env_regex(name), value)
       end)
