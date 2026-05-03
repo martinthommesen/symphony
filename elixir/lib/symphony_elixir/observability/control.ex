@@ -154,15 +154,19 @@ defmodule SymphonyElixir.Observability.Control do
 
   @doc """
   Dispatch a command. Emits `control_command_*` audit events around the call.
+
+  Pass `:orchestrator` in `opts` to target a non-default orchestrator
+  process (used when the Phoenix endpoint is started with a custom
+  orchestrator name — see `SymphonyElixirWeb.Endpoint.config(:orchestrator)`).
   """
-  @spec execute(atom(), map()) :: {:ok, map()} | {:error, term()}
-  def execute(command, params) when is_atom(command) and is_map(params) do
+  @spec execute(atom(), map(), keyword()) :: {:ok, map()} | {:error, term()}
+  def execute(command, params, opts \\ []) when is_atom(command) and is_map(params) do
     Observability.emit(:control_command_requested, %{
       message: "control command requested",
       data: %{command: Atom.to_string(command), params: redact_params(params)}
     })
 
-    result = do_execute(command, params)
+    result = do_execute(command, params, opts)
 
     case result do
       {:ok, payload} ->
@@ -183,8 +187,8 @@ defmodule SymphonyElixir.Observability.Control do
     end
   end
 
-  defp do_execute(:refresh, _params) do
-    case Orchestrator.request_refresh() do
+  defp do_execute(:refresh, _params, opts) do
+    case Orchestrator.request_refresh(orchestrator(opts)) do
       :unavailable ->
         {:error, :unavailable}
 
@@ -195,46 +199,48 @@ defmodule SymphonyElixir.Observability.Control do
     end
   end
 
-  defp do_execute(:pause, _params), do: Orchestrator.pause_polling()
-  defp do_execute(:resume, _params), do: Orchestrator.resume_polling()
+  defp do_execute(:pause, _params, opts), do: Orchestrator.pause_polling(orchestrator(opts))
+  defp do_execute(:resume, _params, opts), do: Orchestrator.resume_polling(orchestrator(opts))
 
-  defp do_execute(:dispatch, %{"issue_identifier" => id}) when is_binary(id) and id != "" do
-    Orchestrator.request_dispatch(id)
+  defp do_execute(:dispatch, %{"issue_identifier" => id}, opts) when is_binary(id) and id != "" do
+    Orchestrator.request_dispatch(orchestrator(opts), id)
   end
 
-  defp do_execute(:dispatch, _), do: {:error, :missing_issue_identifier}
+  defp do_execute(:dispatch, _, _opts), do: {:error, :missing_issue_identifier}
 
-  defp do_execute(:stop, %{"issue_identifier" => id}) when is_binary(id) and id != "" do
-    Orchestrator.stop_issue(id)
+  defp do_execute(:stop, %{"issue_identifier" => id}, opts) when is_binary(id) and id != "" do
+    Orchestrator.stop_issue(orchestrator(opts), id)
   end
 
-  defp do_execute(:stop, _), do: {:error, :missing_issue_identifier}
+  defp do_execute(:stop, _, _opts), do: {:error, :missing_issue_identifier}
 
-  defp do_execute(:retry, %{"issue_identifier" => id}) when is_binary(id) and id != "" do
-    Orchestrator.retry_issue(id)
+  defp do_execute(:retry, %{"issue_identifier" => id}, opts) when is_binary(id) and id != "" do
+    Orchestrator.retry_issue(orchestrator(opts), id)
   end
 
-  defp do_execute(:retry, _), do: {:error, :missing_issue_identifier}
+  defp do_execute(:retry, _, _opts), do: {:error, :missing_issue_identifier}
 
-  defp do_execute(:block, %{"issue_identifier" => id}) when is_binary(id) and id != "" do
+  defp do_execute(:block, %{"issue_identifier" => id}, _opts) when is_binary(id) and id != "" do
     case Tracker.block_issue(id) do
       :ok -> {:ok, %{status: "blocked", issue_identifier: id}}
       other -> other
     end
   end
 
-  defp do_execute(:block, _), do: {:error, :missing_issue_identifier}
+  defp do_execute(:block, _, _opts), do: {:error, :missing_issue_identifier}
 
-  defp do_execute(:unblock, %{"issue_identifier" => id}) when is_binary(id) and id != "" do
+  defp do_execute(:unblock, %{"issue_identifier" => id}, _opts) when is_binary(id) and id != "" do
     case Tracker.unblock_issue(id) do
       :ok -> {:ok, %{status: "unblocked", issue_identifier: id}}
       other -> other
     end
   end
 
-  defp do_execute(:unblock, _), do: {:error, :missing_issue_identifier}
+  defp do_execute(:unblock, _, _opts), do: {:error, :missing_issue_identifier}
 
-  defp do_execute(_command, _params), do: {:error, :unknown_command}
+  defp do_execute(_command, _params, _opts), do: {:error, :unknown_command}
+
+  defp orchestrator(opts), do: Keyword.get(opts, :orchestrator, Orchestrator)
 
   defp maybe_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp maybe_iso(value), do: value

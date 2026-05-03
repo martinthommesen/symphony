@@ -103,9 +103,10 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
         conn
       end
 
-    conn = send_comment(conn, "connected")
-
-    sse_loop(conn, filters, schedule_heartbeat(), 0)
+    case send_comment(conn, "connected") do
+      {:ok, conn} -> sse_loop(conn, filters, schedule_heartbeat(), 0)
+      {:error, _reason} -> conn
+    end
   end
 
   defp replay_events(conn, filters) do
@@ -132,8 +133,8 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
       :sse_heartbeat ->
         case send_comment(conn, "heartbeat") do
-          %Conn{} = conn -> sse_loop(conn, filters, schedule_heartbeat(), dropped)
-          _ -> conn
+          {:ok, conn} -> sse_loop(conn, filters, schedule_heartbeat(), dropped)
+          {:error, _reason} -> conn
         end
 
       _other ->
@@ -141,8 +142,8 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     after
       30_000 ->
         case send_comment(conn, "idle") do
-          %Conn{} = conn -> sse_loop(conn, filters, heartbeat_ref, dropped)
-          _ -> conn
+          {:ok, conn} -> sse_loop(conn, filters, heartbeat_ref, dropped)
+          {:error, _reason} -> conn
         end
     end
   end
@@ -186,11 +187,12 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end)
   end
 
+  # Returns `{:ok, conn}` on a successful chunk write or `{:error, reason}`
+  # on transport failure. The caller must terminate the SSE loop on
+  # `{:error, _}` so a disconnected client does not leave the request
+  # process alive scheduling heartbeats forever.
   defp send_comment(conn, message) do
-    case Conn.chunk(conn, ":" <> message <> "\n\n") do
-      {:ok, conn} -> conn
-      {:error, _} -> conn
-    end
+    Conn.chunk(conn, ":" <> message <> "\n\n")
   end
 
   defp type_string(value) when is_atom(value), do: Atom.to_string(value)
@@ -231,7 +233,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     with :ok <- authorize(conn) do
       command = command_atom(params["command"] || conn.path_info |> List.last())
 
-      case Control.execute(command, params) do
+      case Control.execute(command, params, orchestrator: orchestrator()) do
         {:ok, payload} ->
           json(conn, %{ok: true, command: command, payload: payload})
 
