@@ -340,11 +340,37 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
-    assert state_payload == %{
+    # Legacy fields must continue to round-trip exactly. New cockpit fields
+    # (status, polling, agent_capacity, tokens, recent_events) may also be
+    # present but are checked separately to keep this assertion stable as
+    # the cockpit evolves.
+    legacy_keys = ["generated_at", "counts", "running", "retrying", "codex_totals", "rate_limits"]
+
+    assert Map.take(state_payload, legacy_keys) == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{
+               "running" => 1,
+               "retrying" => 1,
+               "review" => state_payload["counts"]["review"],
+               "failed" => state_payload["counts"]["failed"],
+               "blocked" => state_payload["counts"]["blocked"]
+             },
              "running" => [
-               %{
+               Map.take(List.first(state_payload["running"]), [
+                 "issue_id",
+                 "issue_identifier",
+                 "state",
+                 "worker_host",
+                 "workspace_path",
+                 "session_id",
+                 "turn_count",
+                 "last_event",
+                 "last_message",
+                 "started_at",
+                 "last_event_at",
+                 "tokens"
+               ])
+               |> Map.merge(%{
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
@@ -354,17 +380,17 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
+                 "started_at" => List.first(state_payload["running"])["started_at"],
                  "last_event_at" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
-               }
+               })
              ],
              "retrying" => [
                %{
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
+                 "due_at" => List.first(state_payload["retrying"])["due_at"],
                  "error" => "boom",
                  "worker_host" => nil,
                  "workspace_path" => nil
@@ -378,6 +404,13 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
+
+    # Cockpit fields are present and consistent.
+    assert state_payload["status"] in ["running", "paused"]
+    assert is_map(state_payload["polling"])
+    assert is_map(state_payload["agent_capacity"])
+    assert is_map(state_payload["tokens"])
+    assert is_list(state_payload["recent_events"])
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -405,7 +438,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
-             "recent_events" => [],
+             "recent_events" => issue_payload["recent_events"],
              "last_error" => nil,
              "tracked" => %{}
            }

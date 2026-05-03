@@ -44,10 +44,29 @@ The script is idempotent. It:
 ### Daily use
 
 ```bash
-scripts/symphony-start.sh    # start orchestrator
+scripts/symphony-start.sh    # start orchestrator (HTTP API on 127.0.0.1)
+scripts/symphony-tui.sh      # OpenTUI operations cockpit
 scripts/symphony-status.sh   # show current state and active issues
 scripts/symphony-stop.sh     # stop orchestrator
 ```
+
+### OpenTUI operations cockpit
+
+`scripts/symphony-tui.sh` launches a terminal cockpit that talks to the
+running Symphony backend over an authenticated HTTP/SSE API. It needs
+[Bun](https://bun.sh) (the OpenTUI renderer uses Bun's FFI). The cockpit
+provides:
+
+- live overview, issue list, agent stream, controls, analytics, logs
+- pause/resume polling, dispatch/stop/retry/block individual issues
+- read-only mode whenever no control token is configured
+
+`scripts/setup-symphony-copilot.sh` writes a 32-byte hex token to
+`.symphony/control-token` (mode 600) and adds it to `.gitignore`. Override
+with `SYMPHONY_CONTROL_TOKEN`. See
+[`docs/opentui-dashboard.md`](docs/opentui-dashboard.md) for the full
+keybinding reference and security posture.
+
 
 Create or label any issue with `symphony` to dispatch a run. Symphony will:
 

@@ -3,24 +3,45 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Tracker}
+  alias SymphonyElixir.Observability.{Analytics, Control, Event, EventStore}
+  alias SymphonyElixir.Linear.Issue, as: TrackerIssue
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
-    generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+    generated_at = iso_now()
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        running = Enum.map(snapshot.running, &running_entry_payload/1)
+        retrying = Enum.map(snapshot.retrying, &retry_entry_payload/1)
+        polling = expanded_polling(snapshot)
+        capacity = expanded_capacity(snapshot)
+        recent_events = recent_events_payload()
+
         %{
           generated_at: generated_at,
+          status: orchestrator_status(polling),
           counts: %{
-            running: length(snapshot.running),
-            retrying: length(snapshot.retrying)
+            running: length(running),
+            retrying: length(retrying),
+            review: count_state(running, "review"),
+            failed: count_state(running, "failed"),
+            blocked: count_state(running, "blocked")
           },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
+          running: running,
+          retrying: retrying,
           codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          rate_limits: snapshot.rate_limits,
+          polling: polling,
+          agent_capacity: capacity,
+          tokens: %{
+            input_tokens: get_in(snapshot, [:codex_totals, :input_tokens]) || 0,
+            output_tokens: get_in(snapshot, [:codex_totals, :output_tokens]) || 0,
+            total_tokens: get_in(snapshot, [:codex_totals, :total_tokens]) || 0,
+            tokens_per_second: tokens_per_second_from_snapshot(snapshot)
+          },
+          recent_events: recent_events
         }
 
       :timeout ->
@@ -60,6 +81,86 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec health_payload(GenServer.name()) :: map()
+  def health_payload(orchestrator) do
+    settings =
+      try do
+        Config.settings!()
+      rescue
+        _ -> nil
+      end
+
+    repo = settings && Map.get(settings.tracker, :repo)
+    host = settings && Map.get(settings.server, :host)
+    port = (settings && Map.get(settings.server, :port)) || Config.server_port() || 0
+
+    control_enabled = Control.control_enabled?()
+    orchestrator_alive = is_pid(Process.whereis(orchestrator))
+
+    %{
+      status: if(orchestrator_alive, do: "ok", else: "degraded"),
+      version: Application.spec(:symphony_elixir, :vsn) |> to_string(),
+      repo: repo,
+      server: %{host: host || "127.0.0.1", port: port},
+      capabilities: %{
+        control: control_enabled,
+        events_stream: true,
+        analytics: true,
+        read_only: not control_enabled
+      },
+      orchestrator: %{available: orchestrator_alive, paused: orchestrator_alive and Orchestrator.polling_paused?(orchestrator)}
+    }
+  end
+
+  @spec issues_list_payload(GenServer.name(), timeout()) :: map()
+  def issues_list_payload(orchestrator, snapshot_timeout_ms) do
+    snapshot =
+      case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+        %{} = s -> s
+        _ -> %{running: [], retrying: []}
+      end
+
+    {tracker_issues, source_mode} =
+      case Tracker.list_managed_issues() do
+        {:ok, issues} -> {issues, "tracker"}
+        {:error, _} -> {[], "snapshot"}
+      end
+
+    issues =
+      tracker_issues
+      |> Enum.map(&projection_from_tracker(&1, snapshot))
+      |> merge_running_only_issues(snapshot)
+
+    %{
+      generated_at: iso_now(),
+      source: %{mode: source_mode, count: length(issues)},
+      issues: issues
+    }
+  end
+
+  @spec events_payload(map() | keyword()) :: map()
+  def events_payload(filters) do
+    events = EventStore.query(filters)
+
+    %{
+      generated_at: iso_now(),
+      events: Enum.map(events, &Event.to_payload/1),
+      count: length(events)
+    }
+  end
+
+  @spec analytics_payload(GenServer.name(), timeout()) :: map()
+  def analytics_payload(orchestrator, snapshot_timeout_ms) do
+    snapshot =
+      case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+        %{} = s -> s
+        _ -> nil
+      end
+
+    events = EventStore.query(%{})
+    Analytics.compute(events, snapshot)
+  end
+
   defp issue_payload_body(issue_identifier, running, retry) do
     %{
       issue_identifier: issue_identifier,
@@ -78,7 +179,7 @@ defmodule SymphonyElixirWeb.Presenter do
       logs: %{
         codex_session_logs: []
       },
-      recent_events: (running && recent_events_payload(running)) || [],
+      recent_events: (running && recent_events_for_issue_payload(running)) || [],
       last_error: retry && retry.error,
       tracked: %{}
     }
@@ -108,6 +209,7 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
+      runtime_seconds: Map.get(entry, :runtime_seconds, 0),
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
@@ -167,7 +269,7 @@ defmodule SymphonyElixirWeb.Presenter do
     (running && Map.get(running, :worker_host)) || (retry && Map.get(retry, :worker_host))
   end
 
-  defp recent_events_payload(running) do
+  defp recent_events_for_issue_payload(running) do
     [
       %{
         at: iso8601(running.last_codex_timestamp),
@@ -176,6 +278,155 @@ defmodule SymphonyElixirWeb.Presenter do
       }
     ]
     |> Enum.reject(&is_nil(&1.at))
+  end
+
+  defp recent_events_payload do
+    EventStore.query(%{limit: 50})
+    |> Enum.map(&Event.to_payload/1)
+  rescue
+    _ -> []
+  end
+
+  defp expanded_polling(snapshot) do
+    polling = Map.get(snapshot, :polling) || %{}
+
+    %{
+      paused: Map.get(polling, :paused) == true,
+      checking: Map.get(polling, :checking?) == true,
+      next_poll_in_ms: Map.get(polling, :next_poll_in_ms),
+      poll_interval_ms: Map.get(polling, :poll_interval_ms)
+    }
+  end
+
+  defp expanded_capacity(snapshot) do
+    max = Map.get(snapshot, :max_concurrent_agents) || 0
+    running = length(Map.get(snapshot, :running, []))
+
+    %{
+      max: max,
+      running: running,
+      available: max(max - running, 0)
+    }
+  end
+
+  defp orchestrator_status(%{paused: true}), do: "paused"
+  defp orchestrator_status(_), do: "running"
+
+  defp count_state(entries, state) when is_list(entries) and is_binary(state) do
+    Enum.count(entries, &(Map.get(&1, :state) == state))
+  end
+
+  defp tokens_per_second_from_snapshot(snapshot) do
+    totals = Map.get(snapshot, :codex_totals) || %{}
+    seconds = Map.get(totals, :seconds_running) || 0
+    total = Map.get(totals, :total_tokens) || 0
+    if seconds > 0, do: Float.round(total / seconds, 2), else: 0
+  end
+
+  defp projection_from_tracker(%TrackerIssue{} = issue, snapshot) do
+    running_entry =
+      Enum.find(Map.get(snapshot, :running, []), fn %{issue_id: id} -> id == issue.id end)
+
+    retry_entry =
+      Enum.find(Map.get(snapshot, :retrying, []), fn %{issue_id: id} -> id == issue.id end)
+
+    base = %{
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_number: parse_issue_number(issue.id),
+      title: issue.title,
+      state: issue.state,
+      labels: Map.get(issue, :labels, []),
+      assignee_id: issue.assignee_id,
+      priority: issue.priority,
+      branch: issue_branch_name(issue),
+      pr_url: nil,
+      created_at: iso8601(issue.created_at),
+      updated_at: iso8601(issue.updated_at),
+      agent_state: agent_state(running_entry, retry_entry, issue.state),
+      worker_host: running_entry && Map.get(running_entry, :worker_host),
+      workspace_path: running_entry && Map.get(running_entry, :workspace_path),
+      runtime_seconds: running_entry && Map.get(running_entry, :runtime_seconds, 0),
+      turn_count: running_entry && Map.get(running_entry, :turn_count, 0),
+      tokens: running_entry_tokens(running_entry),
+      last_event: running_entry && running_entry.last_codex_event,
+      last_error: retry_entry && retry_entry.error
+    }
+
+    base
+  end
+
+  defp projection_from_tracker(_issue, _snapshot), do: nil
+
+  defp running_entry_tokens(nil), do: %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
+
+  defp running_entry_tokens(entry) do
+    %{
+      input_tokens: Map.get(entry, :codex_input_tokens, 0),
+      output_tokens: Map.get(entry, :codex_output_tokens, 0),
+      total_tokens: Map.get(entry, :codex_total_tokens, 0)
+    }
+  end
+
+  defp agent_state(running, retry, fallback) do
+    cond do
+      running -> "running"
+      retry -> "retrying"
+      true -> fallback
+    end
+  end
+
+  defp issue_branch_name(%TrackerIssue{id: id}) when is_binary(id) do
+    case parse_issue_number(id) do
+      n when is_integer(n) -> "symphony/issue-#{n}"
+      _ -> nil
+    end
+  end
+
+  defp issue_branch_name(_), do: nil
+
+  defp parse_issue_number(id) when is_binary(id) do
+    case Integer.parse(id) do
+      {n, _} -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_issue_number(_), do: nil
+
+  defp merge_running_only_issues(issues, snapshot) do
+    known_ids = MapSet.new(issues, & &1.issue_id)
+
+    extra_running =
+      snapshot
+      |> Map.get(:running, [])
+      |> Enum.reject(&MapSet.member?(known_ids, &1.issue_id))
+      |> Enum.map(fn entry ->
+        %{
+          issue_id: entry.issue_id,
+          issue_identifier: entry.identifier,
+          issue_number: parse_issue_number(entry.issue_id),
+          title: nil,
+          state: entry.state,
+          labels: [],
+          assignee_id: nil,
+          priority: nil,
+          branch: nil,
+          pr_url: nil,
+          created_at: nil,
+          updated_at: nil,
+          agent_state: "running",
+          worker_host: Map.get(entry, :worker_host),
+          workspace_path: Map.get(entry, :workspace_path),
+          runtime_seconds: Map.get(entry, :runtime_seconds, 0),
+          turn_count: Map.get(entry, :turn_count, 0),
+          tokens: running_entry_tokens(entry),
+          last_event: entry.last_codex_event,
+          last_error: nil
+        }
+      end)
+
+    issues ++ extra_running
   end
 
   defp summarize_message(nil), do: nil
@@ -197,4 +448,8 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp iso8601(_datetime), do: nil
+
+  defp iso_now do
+    DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+  end
 end

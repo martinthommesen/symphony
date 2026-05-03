@@ -263,13 +263,32 @@ fi
 
 # 12. Wrapper scripts.
 WRAPPERS_SRC="$SYMPHONY_HOME/scripts"
-for w in symphony-start.sh symphony-stop.sh symphony-status.sh; do
+for w in symphony-start.sh symphony-stop.sh symphony-status.sh symphony-tui.sh; do
   if [[ -f "$WRAPPERS_SRC/$w" && ! -f "scripts/$w" ]]; then
     cp "$WRAPPERS_SRC/$w" "scripts/$w"
     chmod +x "scripts/$w"
     log "Wrote scripts/$w"
   fi
 done
+
+# 12b. Generate a per-repo control token if one isn't present.
+TOKEN_FILE=".symphony/control-token"
+if [[ ! -f "$TOKEN_FILE" ]]; then
+  if command -v openssl >/dev/null 2>&1; then
+    TOKEN="$(openssl rand -hex 32)"
+  elif [[ -r /dev/urandom ]]; then
+    TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  else
+    warn "No openssl or /dev/urandom available; skipping control-token generation."
+    TOKEN=""
+  fi
+
+  if [[ -n "$TOKEN" ]]; then
+    umask 077
+    printf '%s\n' "$TOKEN" > "$TOKEN_FILE"
+    log "Wrote $TOKEN_FILE (mode 600)"
+  fi
+fi
 
 # 13. Append .gitignore entries (idempotent).
 GITIGNORE=".gitignore"
@@ -282,6 +301,8 @@ add_gitignore_line() {
   fi
 }
 add_gitignore_line ".symphony/logs/"
+add_gitignore_line ".symphony/control-token"
+add_gitignore_line ".symphony/*.token"
 
 cat <<EOF
 
@@ -290,8 +311,13 @@ Symphony setup complete.
 Next steps:
 
   scripts/symphony-start.sh       # start orchestrator
+  scripts/symphony-tui.sh         # launch the OpenTUI operations cockpit
   scripts/symphony-status.sh      # show running issues
   scripts/symphony-stop.sh        # stop orchestrator
 
 Create a GitHub issue with the 'symphony' label to dispatch Copilot.
+
+The TUI requires Bun (https://bun.sh). Install once with:
+  curl -fsSL https://bun.sh/install | bash
+
 EOF

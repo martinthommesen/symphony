@@ -260,7 +260,11 @@ defmodule SymphonyElixir.TestSupport do
       "observability:",
       "  dashboard_enabled: #{yaml_value(enabled)}",
       "  refresh_ms: #{yaml_value(refresh_ms)}",
-      "  render_interval_ms: #{yaml_value(render_interval_ms)}"
+      "  render_interval_ms: #{yaml_value(render_interval_ms)}",
+      # The following keys are optional; default to safe values so the
+      # event store/control auth modules behave deterministically in tests.
+      "  jsonl_enabled: false",
+      "  event_buffer_size: 1000"
     ]
     |> Enum.join("\n")
   end

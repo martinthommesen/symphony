@@ -1,0 +1,23 @@
+{
+  "name": "symphony-tui",
+  "version": "0.1.0",
+  "description": "OpenTUI operations cockpit for Symphony",
+  "private": true,
+  "type": "module",
+  "module": "src/main.ts",
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "test": "bun test",
+    "typecheck": "bun x tsc --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "0.2.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.4.0"
+  }
+}

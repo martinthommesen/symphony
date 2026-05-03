@@ -33,6 +33,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      paused: false,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
@@ -219,6 +220,12 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp maybe_dispatch(%State{paused: true} = state) do
+    # While paused, we still reconcile already-running issues so externally
+    # closed/blocked tickets are picked up, but we never dispatch new work.
+    reconcile_running_issues(state)
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -1097,6 +1104,57 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec pause_polling(GenServer.server()) :: {:ok, map()} | {:error, :unavailable}
+  def pause_polling(server \\ __MODULE__) do
+    safe_call(server, :pause)
+  end
+
+  @spec resume_polling(GenServer.server()) :: {:ok, map()} | {:error, :unavailable}
+  def resume_polling(server \\ __MODULE__) do
+    safe_call(server, :resume)
+  end
+
+  @spec polling_paused?(GenServer.server()) :: boolean()
+  def polling_paused?(server \\ __MODULE__) do
+    case safe_call(server, :paused?) do
+      {:ok, value} -> value == true
+      _ -> false
+    end
+  end
+
+  @spec stop_issue(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def stop_issue(server \\ __MODULE__, identifier_or_id) do
+    safe_call(server, {:stop_issue, identifier_or_id})
+  end
+
+  @spec request_dispatch(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def request_dispatch(server \\ __MODULE__, identifier_or_id) do
+    safe_call(server, {:dispatch_issue, identifier_or_id})
+  end
+
+  @spec retry_issue(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  def retry_issue(server \\ __MODULE__, identifier_or_id) do
+    safe_call(server, {:retry_issue, identifier_or_id})
+  end
+
+  defp safe_call(server, message, timeout \\ 5_000) do
+    if Process.whereis(server) do
+      try do
+        case GenServer.call(server, message, timeout) do
+          {:ok, _} = ok -> ok
+          {:error, _} = err -> err
+          %{} = map -> {:ok, map}
+          other -> {:ok, other}
+        end
+      catch
+        :exit, {:timeout, _} -> {:error, :timeout}
+        :exit, _ -> {:error, :unavailable}
+      end
+    else
+      {:error, :unavailable}
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1149,9 +1207,101 @@ defmodule SymphonyElixir.Orchestrator do
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
-         poll_interval_ms: state.poll_interval_ms
-       }
+         poll_interval_ms: state.poll_interval_ms,
+         paused: state.paused == true
+       },
+       max_concurrent_agents: state.max_concurrent_agents
      }, state}
+  end
+
+  def handle_call(:pause, _from, state) do
+    new_state = %{state | paused: true}
+    SymphonyElixir.Observability.emit(:orchestrator_paused, %{severity: :info})
+    notify_dashboard()
+    {:reply, %{paused: true}, new_state}
+  end
+
+  def handle_call(:resume, _from, state) do
+    new_state = %{state | paused: false}
+    SymphonyElixir.Observability.emit(:orchestrator_resumed, %{severity: :info})
+    notify_dashboard()
+    {:reply, %{paused: false}, new_state}
+  end
+
+  def handle_call(:paused?, _from, state) do
+    {:reply, state.paused == true, state}
+  end
+
+  def handle_call({:stop_issue, identifier_or_id}, _from, state) do
+    case find_running_by_identifier(state, identifier_or_id) do
+      {issue_id, _entry} ->
+        new_state = terminate_running_issue(state, issue_id, false)
+
+        SymphonyElixir.Observability.emit(:agent_stopped, %{
+          severity: :warning,
+          issue_id: issue_id,
+          message: "Stop requested via control API"
+        })
+
+        notify_dashboard()
+        {:reply, {:ok, %{issue_id: issue_id, status: "stopped"}}, new_state}
+
+      :not_found ->
+        {:reply, {:error, :issue_not_running}, state}
+    end
+  end
+
+  def handle_call({:dispatch_issue, identifier_or_id}, _from, state) do
+    case Tracker.fetch_candidate_issues() do
+      {:ok, issues} ->
+        case find_dispatchable_issue(issues, identifier_or_id) do
+          %Issue{} = issue ->
+            active_states = active_state_set()
+            terminal_states = terminal_state_set()
+
+            if should_dispatch_issue?(issue, state, active_states, terminal_states) do
+              new_state = dispatch_issue(state, issue)
+
+              SymphonyElixir.Observability.emit(:issue_dispatched, %{
+                issue_id: issue.id,
+                issue_identifier: issue.identifier,
+                message: "Manual dispatch via control API"
+              })
+
+              notify_dashboard()
+              {:reply, {:ok, %{issue_id: issue.id, issue_identifier: issue.identifier, status: "dispatched"}}, new_state}
+            else
+              {:reply, {:error, :not_dispatchable}, state}
+            end
+
+          nil ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:retry_issue, identifier_or_id}, _from, state) do
+    case Tracker.mark_for_retry(to_string(identifier_or_id)) do
+      :ok ->
+        new_state = schedule_tick(state, 0)
+
+        SymphonyElixir.Observability.emit(:retry_scheduled, %{
+          issue_identifier: to_string(identifier_or_id),
+          message: "Retry requested via control API"
+        })
+
+        notify_dashboard()
+        {:reply, {:ok, %{status: "retry_scheduled"}}, new_state}
+
+      {:error, :unsupported} ->
+        {:reply, {:error, :unsupported}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   def handle_call(:request_refresh, _from, state) do
@@ -1167,6 +1317,27 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  defp find_running_by_identifier(%State{running: running}, identifier_or_id) do
+    case Map.get(running, to_string(identifier_or_id)) do
+      nil ->
+        Enum.find_value(running, :not_found, fn {issue_id, entry} ->
+          if entry.identifier == to_string(identifier_or_id), do: {issue_id, entry}
+        end)
+
+      entry ->
+        {to_string(identifier_or_id), entry}
+    end
+  end
+
+  defp find_dispatchable_issue(issues, identifier_or_id) do
+    target = to_string(identifier_or_id)
+
+    Enum.find(issues, fn
+      %Issue{id: id, identifier: identifier} -> id == target or identifier == target
+      _ -> false
+    end)
   end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do

@@ -166,6 +166,28 @@ The observability UI now runs on a minimal Phoenix stack:
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
+### Operations API and OpenTUI cockpit
+
+The legacy endpoints (`GET /api/v1/state`, `GET /api/v1/<issue_identifier>`,
+`POST /api/v1/refresh`) are preserved verbatim. The cockpit adds:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET`  | `/api/v1/health` | bootstrap + control posture |
+| `GET`  | `/api/v1/issues` | Symphony-managed issue projection |
+| `GET`  | `/api/v1/events` | recent observability events (filterable) |
+| `GET`  | `/api/v1/events/stream` | SSE live event stream |
+| `GET`  | `/api/v1/analytics` | aggregate metrics |
+| `POST` | `/api/v1/control/{refresh,pause,resume,dispatch,stop,retry,block,unblock}` | mutating commands (require `Authorization: Bearer <token>`) |
+
+The control token resolves from `SYMPHONY_CONTROL_TOKEN` first, then from
+`observability.control_token_file` (default `.symphony/control-token`).
+When no token is configured the control endpoints return `403`
+`control_disabled` and the TUI runs in read-only mode.
+
+See [`docs/opentui-dashboard.md`](../docs/opentui-dashboard.md) for the
+TUI architecture, OpenTUI assumptions, security posture, and keybindings.
+
 ## Project Layout
 
 - `lib/`: application code and Mix tasks
