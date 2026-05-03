@@ -307,6 +307,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   defp trim_to_buffer_size(%State{length: length, buffer_size: size} = state)
        when length > size do
     {{_dropped, q}, _} = pop_one(state.events)
+
     %{state | events: q, length: length - 1}
     |> trim_to_buffer_size()
   end
@@ -325,6 +326,7 @@ defmodule SymphonyElixir.Observability.EventStore do
         |> File.stream!([], :line)
         |> Enum.reduce(:queue.new(), fn line, queue ->
           queue = :queue.in(line, queue)
+
           if :queue.len(queue) > size do
             {_, q} = :queue.out(queue)
             q

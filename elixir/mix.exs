@@ -29,6 +29,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Observability,
           SymphonyElixir.Observability.Analytics,
           SymphonyElixir.Observability.Control,
+          SymphonyElixir.Observability.Event,
           SymphonyElixir.Observability.EventStore,
           SymphonyElixir.Observability.EventStore.State,
           SymphonyElixirWeb.DashboardLive,

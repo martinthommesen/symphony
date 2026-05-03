@@ -154,6 +154,7 @@ defmodule SymphonyElixir.Observability.Analytics do
     running
     |> Enum.map(fn entry ->
       tokens = total_tokens_from_entry(entry)
+
       %{
         issue_identifier: Map.get(entry, :identifier),
         issue_id: Map.get(entry, :issue_id),

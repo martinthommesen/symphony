@@ -249,9 +249,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:read_timeout_ms, :integer, default: 5_000)
       field(:stall_timeout_ms, :integer, default: 300_000)
 
-      field(:deny_tools, {:array, :string},
-        default: ["shell(git push)", "shell(gh pr)", "shell(gh issue)"]
-      )
+      field(:deny_tools, {:array, :string}, default: ["shell(git push)", "shell(gh pr)", "shell(gh issue)"])
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
