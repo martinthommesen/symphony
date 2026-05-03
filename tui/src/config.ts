@@ -16,13 +16,16 @@ export interface RuntimeConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
   const apiUrl = (env.SYMPHONY_API_URL ?? "http://127.0.0.1:4000").replace(/\/+$/, "");
-  let controlToken = env.SYMPHONY_CONTROL_TOKEN ?? null;
+  // Trim SYMPHONY_CONTROL_TOKEN and treat whitespace-only / empty as "no
+  // token configured". Otherwise the TUI would start in writable mode
+  // and send an empty Bearer header that the backend always rejects —
+  // every mutating action would fail with `missing_token`.
+  let controlToken = nilifyBlank(env.SYMPHONY_CONTROL_TOKEN);
 
   if (!controlToken) {
     const tokenFile = env.SYMPHONY_CONTROL_TOKEN_FILE ?? ".symphony/control-token";
     try {
-      const contents = readFileSync(tokenFile, "utf-8").trim();
-      if (contents.length > 0) controlToken = contents;
+      controlToken = nilifyBlank(readFileSync(tokenFile, "utf-8"));
     } catch {
       // No-op; missing token file means read-only mode.
     }
@@ -33,6 +36,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
   const logLevel = env.SYMPHONY_TUI_LOG_LEVEL ?? "info";
 
   return { apiUrl, controlToken, noColor, reducedMotion, logLevel };
+}
+
+function nilifyBlank(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function parseBool(value: string | undefined): boolean {

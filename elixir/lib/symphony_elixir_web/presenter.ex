@@ -401,8 +401,11 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_branch_name(_), do: nil
 
   defp parse_issue_number(id) when is_binary(id) do
+    # Require the parse to consume the entire string so UUID-like ids
+    # ("1234abcd-...") and other non-numeric tracker ids don't get
+    # turned into a misleading `symphony/issue-1234` branch name.
     case Integer.parse(id) do
-      {n, _} -> n
+      {n, ""} when n > 0 -> n
       _ -> nil
     end
   end

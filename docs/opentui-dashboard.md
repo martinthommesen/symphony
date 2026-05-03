@@ -158,9 +158,13 @@ observability:
   event_buffer_size: 5000
   jsonl_path: ".symphony/logs/events.jsonl"
   jsonl_enabled: true
-  retention_days: 30
   control_token_file: ".symphony/control-token"
 ```
+
+The on-disk JSONL is currently append-only. The in-memory ring buffer
+is bounded by `event_buffer_size`; the file is bounded only by what
+operators rotate themselves (e.g., via `logrotate`). A
+`retention_days`-style automatic prune is a follow-up.
 
 Backwards compatibility: existing deployments without `observability.*`
 new keys keep their defaults. The legacy ANSI status dashboard remains
