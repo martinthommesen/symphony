@@ -697,6 +697,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
+
     assert response.body["counts"] == %{
              "blocked" => 0,
              "failed" => 0,
