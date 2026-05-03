@@ -211,11 +211,11 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
 
     test "propagates :gh_timeout from the CLI layer" do
       :ok = setup_gh_stub(self())
+
       Process.put(:gh_response, fn _args ->
         Process.sleep(20)
         {"", 0}
       end)
-
 
       previous_timeout = Application.get_env(:symphony_elixir, :gh_cli_timeout_ms)
       Application.put_env(:symphony_elixir, :gh_cli_timeout_ms, 5)
