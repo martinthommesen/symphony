@@ -44,14 +44,26 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
     with {:ok, repo} <- repo_setting(),
          tracker <- tracker_settings(),
-         {:ok, issues} <- list_open_issues_with_label(repo, tracker.active_labels) do
+         {:ok, open_issues} <- list_open_issues_with_label(repo, tracker.active_labels),
+         {:ok, closed_issues} <- maybe_list_closed_issues(repo, tracker.active_labels, states) do
       filtered =
-        issues
+        (open_issues ++ closed_issues)
         |> Enum.map(&{&1, label_state(&1, tracker)})
         |> Enum.filter(fn {_issue, state} -> MapSet.member?(states, state) end)
         |> Enum.map(fn {issue, state} -> Issue.to_linear_issue(issue, state) end)
 
       {:ok, filtered}
+    end
+  end
+
+  defp maybe_list_closed_issues(repo, active_labels, states) do
+    # The closed-issue REST endpoint is only worth hitting when the caller
+    # asked for terminal states. The orchestrator's startup terminal
+    # cleanup needs this path so workspaces for closed issues get pruned.
+    if MapSet.member?(states, "closed") do
+      list_closed_issues(repo, List.wrap(active_labels))
+    else
+      {:ok, []}
     end
   end
 
@@ -244,12 +256,20 @@ defmodule SymphonyElixir.GitHub.Adapter do
 
   def transition_to(_repo, _number, target, _tracker), do: {:error, {:unsupported_state, target}}
 
+  # Public for tests; do not depend on this from production callers.
+  @doc false
+  @spec transition_delta_for_test(String.t(), map()) :: {[String.t()], [String.t()]}
+  def transition_delta_for_test(state, tracker), do: transition_label_delta(state, tracker)
+
   defp transition_label_delta("running", tracker) do
     {[tracker.running_label], []}
   end
 
+  # Successful retries must clear `failed_label` so the issue does not end
+  # up tagged with both `failed` and `review`/`done` simultaneously, which
+  # would block future redispatches when `retry_failed` is later disabled.
   defp transition_label_delta("review", tracker) do
-    {[tracker.review_label], [tracker.running_label]}
+    {[tracker.review_label], [tracker.running_label, tracker.failed_label]}
   end
 
   defp transition_label_delta("failed", tracker) do
@@ -257,7 +277,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
   end
 
   defp transition_label_delta("done", tracker) do
-    {[tracker.done_label], [tracker.running_label]}
+    {[tracker.done_label], [tracker.running_label, tracker.failed_label]}
   end
 
   defp transition_label_delta("open", tracker) do
@@ -280,14 +300,18 @@ defmodule SymphonyElixir.GitHub.Adapter do
     list_open_issues(repo, labels)
   end
 
-  defp list_open_issues(repo, labels) do
+  defp list_open_issues(repo, labels), do: list_issues_for_state(repo, labels, "open")
+
+  defp list_closed_issues(repo, labels), do: list_issues_for_state(repo, labels, "closed")
+
+  defp list_issues_for_state(repo, labels, state) when state in ["open", "closed"] do
     # Use `gh api --paginate` so repos with >200 candidate issues are not
     # silently truncated. The REST endpoint returns full issue payloads
     # (including `pull_request` for PRs, which `Issue.from_gh_payload/1`
     # filters out).
     repo = CLI.assert_repo!(repo)
 
-    base_path = "repos/#{repo}/issues?state=open&per_page=100"
+    base_path = "repos/#{repo}/issues?state=#{state}&per_page=100"
 
     path =
       case labels do

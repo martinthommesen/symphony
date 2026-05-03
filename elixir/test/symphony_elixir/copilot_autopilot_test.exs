@@ -71,4 +71,25 @@ defmodule SymphonyElixir.Copilot.AutopilotTest do
       assert Enum.at(argv, length(argv) - 2) == "-p"
     end
   end
+
+  describe "stall_triggered?/2" do
+    # `stall_timeout_ms == 0` must disable stall detection rather than fire
+    # immediately. Otherwise every run is killed as :stalled on the first
+    # idle tick after start.
+    test "0 disables stall detection regardless of last_read_at" do
+      ancient = System.monotonic_time(:millisecond) - 10_000_000
+      refute Autopilot.stall_triggered?(0, ancient)
+      refute Autopilot.stall_triggered?(0, System.monotonic_time(:millisecond))
+    end
+
+    test "positive timeout fires when elapsed exceeds bound" do
+      ancient = System.monotonic_time(:millisecond) - 10_000
+      assert Autopilot.stall_triggered?(1_000, ancient)
+    end
+
+    test "positive timeout does not fire when fresh" do
+      now = System.monotonic_time(:millisecond)
+      refute Autopilot.stall_triggered?(60_000, now)
+    end
+  end
 end

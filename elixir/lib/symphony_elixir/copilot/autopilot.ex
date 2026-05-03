@@ -154,7 +154,7 @@ defmodule SymphonyElixir.Copilot.Autopilot do
             kill_port(port)
             finalize_result(:timeout, nil, copilot, acc)
 
-          monotonic_now() - acc.last_read_at >= copilot.stall_timeout_ms ->
+          stall_triggered?(copilot.stall_timeout_ms, acc.last_read_at) ->
             kill_port(port)
             finalize_result(:stalled, nil, copilot, acc)
 
@@ -164,12 +164,28 @@ defmodule SymphonyElixir.Copilot.Autopilot do
     end
   end
 
+  # `stall_timeout_ms == 0` disables stall detection entirely, matching the
+  # legacy codex-side semantics. Any positive value enforces the bound.
+  @doc false
+  @spec stall_triggered?(non_neg_integer(), integer()) :: boolean()
+  def stall_triggered?(0, _last_read_at), do: false
+
+  def stall_triggered?(stall_timeout_ms, last_read_at) when is_integer(stall_timeout_ms) do
+    stall_timeout_ms > 0 and monotonic_now() - last_read_at >= stall_timeout_ms
+  end
+
   defp compute_receive_timeout(copilot, acc) do
     deadline_remaining = max(acc.deadline_at - monotonic_now(), 0)
-    stall_remaining = max(copilot.stall_timeout_ms - (monotonic_now() - acc.last_read_at), 0)
 
-    [copilot.read_timeout_ms, deadline_remaining, stall_remaining]
-    |> Enum.min()
+    candidates =
+      if copilot.stall_timeout_ms > 0 do
+        stall_remaining = max(copilot.stall_timeout_ms - (monotonic_now() - acc.last_read_at), 0)
+        [copilot.read_timeout_ms, deadline_remaining, stall_remaining]
+      else
+        [copilot.read_timeout_ms, deadline_remaining]
+      end
+
+    Enum.min(candidates)
   end
 
   defp handle_line(line, acc, copilot, on_message) do

@@ -100,4 +100,35 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
       assert Adapter.label_state(issue("open", ["symphony"]), tracker_settings()) == "open"
     end
   end
+
+  describe "transition_delta_for_test/2" do
+    test "review removes both running and failed labels so retries don't double-tag" do
+      tracker = tracker_settings()
+      {add, remove} = Adapter.transition_delta_for_test("review", tracker)
+      assert add == [tracker.review_label]
+      assert tracker.running_label in remove
+      assert tracker.failed_label in remove
+    end
+
+    test "done removes both running and failed labels" do
+      tracker = tracker_settings()
+      {_add, remove} = Adapter.transition_delta_for_test("done", tracker)
+      assert tracker.running_label in remove
+      assert tracker.failed_label in remove
+    end
+
+    test "running adds the running label without removals" do
+      tracker = tracker_settings()
+      {add, remove} = Adapter.transition_delta_for_test("running", tracker)
+      assert add == [tracker.running_label]
+      assert remove == []
+    end
+
+    test "failed swaps running for failed" do
+      tracker = tracker_settings()
+      {add, remove} = Adapter.transition_delta_for_test("failed", tracker)
+      assert add == [tracker.failed_label]
+      assert remove == [tracker.running_label]
+    end
+  end
 end
