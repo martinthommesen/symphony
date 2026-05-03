@@ -51,23 +51,30 @@ defmodule SymphonyElixir.Observability.EventStoreTest do
 
   test "broadcasts events to subscribers", %{pid: pid} do
     :ok = EventStore.subscribe()
-    EventStore.emit(%{type: :agent_started, issue_identifier: "GH-7"}, pid)
+    # Use a unique issue_identifier so this test can't pick up an
+    # ambient event from the application's global EventStore that
+    # publishes on the same PubSub topic.
+    marker = "GH-bcast-#{System.unique_integer([:positive])}"
+    EventStore.emit(%{type: :agent_started, issue_identifier: marker}, pid)
 
-    assert_receive {:observability_event, %Event{type: :agent_started, issue_identifier: "GH-7"}}, 200
+    assert_receive {:observability_event, %Event{type: :agent_started, issue_identifier: ^marker}}, 200
   end
 
   test "redacts secrets before persistence and broadcast", %{pid: pid, jsonl: jsonl} do
     :ok = EventStore.subscribe()
 
+    marker = "GH-redact-#{System.unique_integer([:positive])}"
+
     EventStore.emit(
       %{
         type: :agent_stream_line,
+        issue_identifier: marker,
         message: "GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz body"
       },
       pid
     )
 
-    assert_receive {:observability_event, %Event{message: msg, type: :agent_stream_line}}, 200
+    assert_receive {:observability_event, %Event{message: msg, issue_identifier: ^marker}}, 200
     refute msg =~ "ghp_abcdefghijklmnopqrstuv"
     assert msg =~ "[REDACTED]"
 
