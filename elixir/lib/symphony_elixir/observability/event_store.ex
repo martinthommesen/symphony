@@ -68,7 +68,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   """
   @spec subscribe() :: :ok | {:error, term()}
   def subscribe do
-    case Process.whereis(@pubsub) do
+    case GenServer.whereis(@pubsub) do
       pid when is_pid(pid) -> Phoenix.PubSub.subscribe(@pubsub, @topic)
       _ -> :ok
     end
@@ -76,7 +76,7 @@ defmodule SymphonyElixir.Observability.EventStore do
 
   @spec unsubscribe() :: :ok | {:error, term()}
   def unsubscribe do
-    case Process.whereis(@pubsub) do
+    case GenServer.whereis(@pubsub) do
       pid when is_pid(pid) -> Phoenix.PubSub.unsubscribe(@pubsub, @topic)
       _ -> :ok
     end
@@ -88,7 +88,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   """
   @spec query(map() | keyword(), GenServer.server()) :: [Event.t()]
   def query(filters \\ %{}, server \\ __MODULE__) do
-    case Process.whereis(server) do
+    case GenServer.whereis(server) do
       pid when is_pid(pid) -> GenServer.call(pid, {:query, normalize_filters(filters)})
       _ -> []
     end
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   """
   @spec stats(GenServer.server()) :: map()
   def stats(server \\ __MODULE__) do
-    case Process.whereis(server) do
+    case GenServer.whereis(server) do
       pid when is_pid(pid) -> GenServer.call(pid, :stats)
       _ -> %{available: false, length: 0, total_appended: 0}
     end
@@ -165,7 +165,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   # ---------------------------------------------------------------------------
 
   defp cast_or_drop(server, message) do
-    case Process.whereis(server) do
+    case GenServer.whereis(server) do
       pid when is_pid(pid) -> GenServer.cast(pid, message)
       _ -> :ok
     end
@@ -259,7 +259,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   end
 
   defp broadcast(%Event{} = event) do
-    case Process.whereis(@pubsub) do
+    case GenServer.whereis(@pubsub) do
       pid when is_pid(pid) ->
         Phoenix.PubSub.broadcast(@pubsub, @topic, {:observability_event, event})
 

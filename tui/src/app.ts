@@ -105,7 +105,22 @@ export class App {
       this.refreshState(),
       this.refreshIssues(),
       this.refreshAnalytics(),
+      this.refreshEvents(),
     ]);
+  }
+
+  /**
+   * Hydrate the event ring from the backend so Logs/Live views are not
+   * blank until the next SSE frame arrives. Polling reuses the same call
+   * to backfill events the SSE stream might miss after a reconnect.
+   */
+  async refreshEvents(): Promise<void> {
+    try {
+      const payload = await this.client.events({ limit: 200 });
+      this.dispatch({ type: "events/received", events: payload.events });
+    } catch {
+      // tolerate
+    }
   }
 
   async refreshHealth(): Promise<void> {
@@ -199,12 +214,23 @@ export class App {
     }
 
     if (key.name === "tab") {
-      this.dispatch({ type: "view/changed", view: nextView(state.view, +1) });
+      const direction = key.shift ? -1 : 1;
+      this.dispatch({ type: "view/changed", view: nextView(state.view, direction) });
       return;
     }
 
     if (key.name === "/" && state.view === "issues") {
       this.dispatch({ type: "search/open", open: true });
+      return;
+    }
+
+    if (key.name === "return" || key.name === "enter") {
+      // Enter inspects the selected issue: jump from any list view into
+      // the live agent panel for the highlighted row. The Live and Logs
+      // views ignore Enter (no inspectable subitem).
+      if (state.view === "issues" || state.view === "overview" || state.view === "controls") {
+        this.dispatch({ type: "view/changed", view: "live" });
+      }
       return;
     }
 
@@ -251,9 +277,11 @@ export class App {
     }
 
     if (key.name === "b" && issue?.issue_identifier) {
-      const command = (issue.labels ?? []).some((l) => l.startsWith("symphony/blocked"))
-        ? "unblock"
-        : "block";
+      // Use the orchestrator-derived `state` (which the backend resolves
+      // against the configured blocked_labels) instead of pattern-matching
+      // a hardcoded label prefix. This stays correct when blocked_labels
+      // is customised in WORKFLOW.md.
+      const command = (issue.state ?? "").toLowerCase() === "blocked" ? "unblock" : "block";
       this.dispatch({
         type: "confirm/show",
         command,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ApiClient, HttpError } from "../api/client.ts";
+import { ApiClient } from "../api/client.ts";
 import { startFakeBackend } from "./fake_backend.ts";
 
 let backend: ReturnType<typeof startFakeBackend>;
@@ -35,14 +35,12 @@ describe("integration with fake backend", () => {
     expect(state.status).toBe("running");
   });
 
-  test("control rejects without token", async () => {
+  test("control returns a structured ControlFailure when no token is presented", async () => {
     const noTokenClient = new ApiClient({ baseUrl: backend.url, controlToken: null });
-    try {
-      await noTokenClient.control("pause");
-      throw new Error("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(HttpError);
-      expect((err as HttpError).status).toBe(401);
+    const result = await noTokenClient.control("pause");
+    expect(result.ok).toBe(false);
+    if (result.ok === false) {
+      expect(result.error.code).toBe("missing_token");
     }
   });
 

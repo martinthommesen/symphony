@@ -24,27 +24,36 @@ defmodule SymphonyElixir.Observability.Control do
   """
   @spec configured_token() :: String.t() | nil
   def configured_token do
-    case System.get_env(@env_var) do
-      value when is_binary(value) and byte_size(value) > 0 ->
-        String.trim(value)
+    case env_token() do
+      token when is_binary(token) ->
+        token
 
-      _ ->
+      nil ->
         case token_file_path() do
           nil ->
             nil
 
           path ->
             case File.read(path) do
-              {:ok, contents} ->
-                trimmed = String.trim(contents)
-                if trimmed == "", do: nil, else: trimmed
-
-              _ ->
-                nil
+              {:ok, contents} -> nilify_blank(String.trim(contents))
+              _ -> nil
             end
         end
     end
   end
+
+  defp env_token do
+    case System.get_env(@env_var) do
+      value when is_binary(value) -> nilify_blank(String.trim(value))
+      _ -> nil
+    end
+  end
+
+  # A whitespace-only env var or token file would otherwise mark control
+  # as "enabled" with an empty shared secret (`Authorization: Bearer `).
+  # Treat blanks as if no token were configured.
+  defp nilify_blank(""), do: nil
+  defp nilify_blank(value), do: value
 
   @doc """
   Returns `true` when control is enabled (a token is configured).

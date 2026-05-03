@@ -1080,7 +1080,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec request_refresh(GenServer.server()) :: map() | :unavailable
   def request_refresh(server) do
-    if Process.whereis(server) do
+    if alive?(server) do
       GenServer.call(server, :request_refresh)
     else
       :unavailable
@@ -1092,7 +1092,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
+    if alive?(server) do
       try do
         GenServer.call(server, :snapshot, timeout)
       catch
@@ -1138,7 +1138,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp safe_call(server, message, timeout \\ 5_000) do
-    if Process.whereis(server) do
+    if alive?(server) do
       try do
         case GenServer.call(server, message, timeout) do
           {:ok, _} = ok -> ok
@@ -1152,6 +1152,16 @@ defmodule SymphonyElixir.Orchestrator do
       end
     else
       {:error, :unavailable}
+    end
+  end
+
+  # `GenServer.server()` accepts atom names, pids, or `{name, node}` tuples.
+  # `Process.whereis/1` raises on the latter two, so we route via
+  # `GenServer.whereis/1` which handles every variant.
+  defp alive?(server) do
+    case GenServer.whereis(server) do
+      pid when is_pid(pid) -> true
+      _ -> false
     end
   end
 

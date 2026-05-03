@@ -344,7 +344,6 @@ defmodule SymphonyElixir.Config.Schema do
       field(:event_buffer_size, :integer, default: 5_000)
       field(:jsonl_enabled, :boolean, default: true)
       field(:jsonl_path, :string, default: ".symphony/logs/events.jsonl")
-      field(:retention_days, :integer, default: 30)
       field(:control_token_file, :string, default: ".symphony/control-token")
     end
 
@@ -360,7 +359,6 @@ defmodule SymphonyElixir.Config.Schema do
           :event_buffer_size,
           :jsonl_enabled,
           :jsonl_path,
-          :retention_days,
           :control_token_file
         ],
         empty_values: []
@@ -368,7 +366,6 @@ defmodule SymphonyElixir.Config.Schema do
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
       |> validate_number(:event_buffer_size, greater_than: 0)
-      |> validate_number(:retention_days, greater_than_or_equal_to: 0)
     end
   end
 

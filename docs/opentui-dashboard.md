@@ -181,7 +181,7 @@ on by default.
 | `b` | block/unblock selected (confirmed) |
 | `/` | search |
 | `tab`/`shift+tab` | next/previous panel |
-| `1`–`6` | switch view |
+| `1`–`8` | switch view (1=Overview … 8=Help) |
 | `enter` | inspect selected |
 | `esc` | close modal/search |
 

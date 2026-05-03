@@ -34,6 +34,19 @@ defmodule SymphonyElixir.Observability.ControlTest do
       System.put_env("SYMPHONY_CONTROL_TOKEN", "secret")
       assert Control.authenticate("differentlength") == {:error, :invalid_token}
     end
+
+    test "whitespace-only env var is treated as no token (control disabled)" do
+      System.put_env("SYMPHONY_CONTROL_TOKEN", "   ")
+      assert Control.configured_token() == nil
+      assert Control.control_enabled?() == false
+      # An empty Bearer token must not authenticate when control is disabled.
+      assert Control.authenticate("") == :read_only
+    end
+
+    test "empty string env var is treated as no token" do
+      System.put_env("SYMPHONY_CONTROL_TOKEN", "")
+      assert Control.configured_token() == nil
+    end
   end
 
   describe "extract_bearer/1" do

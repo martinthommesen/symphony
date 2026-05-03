@@ -284,8 +284,10 @@ if [[ ! -f "$TOKEN_FILE" ]]; then
   fi
 
   if [[ -n "$TOKEN" ]]; then
-    umask 077
-    printf '%s\n' "$TOKEN" > "$TOKEN_FILE"
+    # Run the write in a subshell so the umask change does not leak into
+    # later steps (e.g. .gitignore append).
+    ( umask 077 && printf '%s\n' "$TOKEN" > "$TOKEN_FILE" )
+    chmod 600 "$TOKEN_FILE" 2>/dev/null || true
     log "Wrote $TOKEN_FILE (mode 600)"
   fi
 fi

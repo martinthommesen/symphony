@@ -99,28 +99,55 @@ export class ApiClient {
   // ---- control endpoints (no retry) ---------------------------------------
 
   async control(command: string, body: Record<string, unknown> = {}): Promise<ControlResult> {
-    const response = await this.request("POST", `/api/v1/control/${encodeURIComponent(command)}`, body);
-    const data = (await response.json().catch(() => null)) as ControlResult | null;
+    // Control endpoints must surface the backend's structured
+    // {ok: false, error: {code, message}} body on 4xx so the UI can show
+    // a useful error (missing token, invalid token, not_dispatchable, …).
+    // We therefore tell `request` not to throw on >= 400.
+    const response = await this.request(
+      "POST",
+      `/api/v1/control/${encodeURIComponent(command)}`,
+      body,
+      { throwOnHttpError: false },
+    );
 
-    if (!data) {
-      return {
-        ok: false,
-        error: { code: "invalid_response", message: `HTTP ${response.status}` },
-      };
+    const data = (await response.json().catch(() => null)) as ControlResult | Record<string, unknown> | null;
+
+    if (data && typeof (data as { ok?: unknown }).ok === "boolean") {
+      return data as ControlResult;
     }
 
-    return data;
+    return {
+      ok: false,
+      error: { code: "invalid_response", message: `HTTP ${response.status}` },
+    };
   }
 
   async refresh(): Promise<ControlResult> {
-    const response = await this.request("POST", `/api/v1/refresh`, {});
+    const response = await this.request("POST", `/api/v1/refresh`, {}, { throwOnHttpError: false });
     const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     if (!data) {
       return { ok: false, error: { code: "invalid_response", message: `HTTP ${response.status}` } };
     }
+
+    // `/api/v1/refresh` is a legacy endpoint and uses the original
+    // {error: {...}} envelope, not {ok: false, error: ...}. Treat any 4xx
+    // (e.g. missing/invalid token, 503 unavailable) as a control failure
+    // for callers that want a uniform return shape.
+    if (response.status >= 400) {
+      const err = (data as { error?: { code?: string; message?: string } }).error;
+      return {
+        ok: false,
+        error: {
+          code: err?.code ?? "http_error",
+          message: err?.message ?? `HTTP ${response.status}`,
+        },
+      };
+    }
+
     if ((data as { ok?: unknown }).ok === false) {
       return data as unknown as ControlResult;
     }
+
     return { ok: true, command: "refresh", payload: data };
   }
 
@@ -144,6 +171,7 @@ export class ApiClient {
     method: "GET" | "POST",
     path: string,
     body?: Record<string, unknown>,
+    options: { throwOnHttpError?: boolean } = {},
   ): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     const headers: Record<string, string> = { accept: "application/json" };
@@ -176,7 +204,8 @@ export class ApiClient {
       clearTimeout(timer);
     }
 
-    if (response.status >= 400) {
+    const throwOnHttpError = options.throwOnHttpError ?? true;
+    if (throwOnHttpError && response.status >= 400) {
       const data = (await response.clone().json().catch(() => null)) as
         | { error?: { code?: string; message?: string } }
         | null;
