@@ -4,8 +4,8 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard, Tracker}
-  alias SymphonyElixir.Observability.{Analytics, Control, Event, EventStore}
   alias SymphonyElixir.Linear.Issue, as: TrackerIssue
+  alias SymphonyElixir.Observability.{Analytics, Control, Event, EventStore}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do

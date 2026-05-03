@@ -32,6 +32,7 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Observability.Event,
           SymphonyElixir.Observability.EventStore,
           SymphonyElixir.Observability.EventStore.State,
+          SymphonyElixir.Tracker,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,

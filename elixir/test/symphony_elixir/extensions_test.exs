@@ -197,6 +197,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
 
+    # The optional tracker callbacks (used by the cockpit's control
+    # endpoints) must return `{:error, :unsupported}` when the adapter
+    # does not implement them. Memory adapter does not.
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.list_managed_issues()
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.block_issue("issue-1")
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.unblock_issue("issue-1")
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.mark_for_retry("issue-1")
+
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
     assert :ok = Memory.update_issue_state("issue-1", "Quiet")
