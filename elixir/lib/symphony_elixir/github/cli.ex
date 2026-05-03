@@ -12,8 +12,8 @@ defmodule SymphonyElixir.GitHub.CLI do
   `:gh_cli_timeout_ms` and defaults to 15s.
   """
 
-  alias SymphonyElixir.RepoId
   alias SymphonyElixir.Redaction
+  alias SymphonyElixir.RepoId
 
   require Logger
 

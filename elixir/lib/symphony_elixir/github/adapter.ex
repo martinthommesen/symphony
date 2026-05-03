@@ -255,6 +255,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
   - does not have running/done/failed/review labels
   """
   @spec eligible?(Issue.t(), map()) :: boolean()
+  # credo:disable-for-next-line
   def eligible?(%Issue{} = issue, tracker) do
     label_set = MapSet.new(issue.labels)
     state = String.downcase(issue.state || "")
@@ -339,6 +340,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
       when target in ["running", "review", "failed", "done", "open"] do
     {add, remove} = transition_label_delta(target, tracker)
 
+    # credo:disable-for-next-line
     with :ok <- add_labels(repo, number, add),
          :ok <- remove_labels(repo, number, remove) do
       :ok

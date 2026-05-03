@@ -19,15 +19,18 @@ defmodule SymphonyElixir.Application do
 
   use Application
 
+  alias SymphonyElixir.{LogFile, Redaction}
+  alias SymphonyElixir.Observability.Control
+
   @impl true
   def start(_type, _args) do
-    :ok = SymphonyElixir.LogFile.configure()
+    :ok = LogFile.configure()
 
     # Register the configured control token (if any) for value-aware
     # redaction. Catches cases where the literal token leaks via agent
     # stdout without an `ENV_VAR=` or `Bearer` prefix.
-    case SymphonyElixir.Observability.Control.configured_token() do
-      token when is_binary(token) -> SymphonyElixir.Redaction.register_known_secret(token)
+    case Control.configured_token() do
+      token when is_binary(token) -> Redaction.register_known_secret(token)
       _ -> :ok
     end
 

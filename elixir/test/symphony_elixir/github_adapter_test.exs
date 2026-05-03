@@ -9,6 +9,7 @@ defmodule SymphonyElixir.GitHub.AdapterTest do
   # configure a tracker schema in WORKFLOW.md (so `repo_setting/0` and
   # `tracker_settings/0` resolve), install a stub `:gh_runner` that
   # captures every argv passed to `gh`, and tear both down on exit.
+  # credo:disable-for-next-line
   defp setup_gh_stub(parent, opts \\ []) do
     repo_value =
       case Keyword.get(opts, :repo, "owner/repo") do

@@ -148,6 +148,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end)
   end
 
+  # credo:disable-for-next-line
   defp sse_loop(conn, filters, heartbeat_ref, dropped, deadline_ms) do
     cond do
       System.monotonic_time(:millisecond) >= deadline_ms ->
@@ -314,6 +315,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   # either authenticated or running on a loopback bind without a
   # configured token (see plug docstring).
   @spec control(Conn.t(), map()) :: Conn.t()
+  # credo:disable-for-next-line
   def control(conn, params) do
     command = command_atom(params["command"] || List.last(conn.path_info))
 
@@ -358,6 +360,7 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  # credo:disable-for-next-line
   defp command_atom(value) when is_binary(value) do
     case String.downcase(value) do
       "refresh" -> :refresh

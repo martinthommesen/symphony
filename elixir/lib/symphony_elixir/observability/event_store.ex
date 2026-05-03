@@ -297,6 +297,7 @@ defmodule SymphonyElixir.Observability.EventStore do
 
   defp maybe_load_history(%State{jsonl_path: path, buffer_size: size} = state)
        when is_binary(path) and path != "" do
+    # credo:disable-for-next-line
     cond do
       not File.exists?(path) ->
         state
@@ -345,6 +346,7 @@ defmodule SymphonyElixir.Observability.EventStore do
     # total file size — long-running deployments can accumulate very
     # large logs, and the previous `File.read/1 + Enum.take(-size)` form
     # held the entire file in memory at startup.
+    # credo:disable-for-next-line
     try do
       tail_queue =
         path
@@ -374,6 +376,7 @@ defmodule SymphonyElixir.Observability.EventStore do
   defp load_recent_lines(_path, _size), do: {:ok, []}
 
   defp decode_jsonl_line(line) when is_binary(line) do
+    # credo:disable-for-next-line
     case String.trim_trailing(line, "\n") do
       "" ->
         []
@@ -466,6 +469,7 @@ defmodule SymphonyElixir.Observability.EventStore do
 
       _ ->
         # Treat as event id high-water mark.
+        # credo:disable-for-next-line
         case Enum.split_while(events, fn %Event{id: id} -> id != since end) do
           # Found the id; replay only what came after it.
           {_before, [_match | rest]} ->

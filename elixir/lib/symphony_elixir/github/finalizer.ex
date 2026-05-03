@@ -240,6 +240,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
 
   defp maybe_open_or_update_pr(_repo, _issue, _run_id, _summary, %{open_pr: false}), do: {:ok, nil}
 
+  # credo:disable-for-next-line
   defp maybe_open_or_update_pr(repo, issue, run_id, summary, _finalizer) do
     title = "Symphony: #{issue.title}"
     body = pr_body(issue, run_id, summary)

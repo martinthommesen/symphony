@@ -121,7 +121,10 @@ defmodule SymphonyElixirWeb.Presenter do
         analytics: true,
         read_only: not control_enabled
       },
-      orchestrator: %{available: orchestrator_alive, paused: orchestrator_alive and Orchestrator.polling_paused?(orchestrator)}
+      orchestrator: %{
+        available: orchestrator_alive,
+        paused: orchestrator_alive and Orchestrator.polling_paused?(orchestrator)
+      }
     }
   end
 

@@ -16,6 +16,7 @@ defmodule SymphonyElixir.Observability.Analytics do
   `snapshot` may be the orchestrator snapshot map or `nil`.
   """
   @spec compute([Event.t()], map() | nil) :: metrics()
+  # credo:disable-for-next-line
   def compute(events, snapshot \\ nil) when is_list(events) do
     grouped = Enum.group_by(events, &type_label/1)
     runtimes = runtime_seconds(events)

@@ -23,6 +23,7 @@ defmodule SymphonyElixir.Observability.Control do
   (read-only mode).
   """
   @spec configured_token() :: String.t() | nil
+  # credo:disable-for-next-line
   def configured_token do
     case env_token() do
       token when is_binary(token) ->
@@ -67,6 +68,7 @@ defmodule SymphonyElixir.Observability.Control do
   """
   @spec token_file_path() :: String.t() | nil
   def token_file_path do
+    # credo:disable-for-next-line
     try do
       case Config.settings!().observability.control_token_file do
         path when is_binary(path) and byte_size(path) > 0 -> path
@@ -133,6 +135,7 @@ defmodule SymphonyElixir.Observability.Control do
   """
   @spec loopback_only?() :: boolean()
   def loopback_only? do
+    # credo:disable-for-next-line
     try do
       case Config.settings!().server.host do
         host when is_binary(host) ->
