@@ -112,8 +112,10 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
         conn
       end
 
+    schedule_heartbeat()
+
     case send_comment(conn, "connected") do
-      {:ok, conn} -> sse_loop(conn, filters, schedule_heartbeat(), 0)
+      {:ok, conn} -> sse_loop(conn, filters)
       {:error, _reason} -> conn
     end
   end
@@ -128,30 +130,32 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end)
   end
 
-  defp sse_loop(conn, filters, heartbeat_ref, dropped) do
+  defp sse_loop(conn, filters) do
     receive do
       {:observability_event, %Event{} = event} ->
         if matches_filters?(event, filters) do
           case send_event(conn, event) do
-            {:ok, conn} -> sse_loop(conn, filters, heartbeat_ref, dropped)
+            {:ok, conn} -> sse_loop(conn, filters)
             {:error, _reason} -> conn
           end
         else
-          sse_loop(conn, filters, heartbeat_ref, dropped)
+          sse_loop(conn, filters)
         end
 
       :sse_heartbeat ->
+        schedule_heartbeat()
+
         case send_comment(conn, "heartbeat") do
-          {:ok, conn} -> sse_loop(conn, filters, schedule_heartbeat(), dropped)
+          {:ok, conn} -> sse_loop(conn, filters)
           {:error, _reason} -> conn
         end
 
       _other ->
-        sse_loop(conn, filters, heartbeat_ref, dropped)
+        sse_loop(conn, filters)
     after
       30_000 ->
         case send_comment(conn, "idle") do
-          {:ok, conn} -> sse_loop(conn, filters, heartbeat_ref, dropped)
+          {:ok, conn} -> sse_loop(conn, filters)
           {:error, _reason} -> conn
         end
     end

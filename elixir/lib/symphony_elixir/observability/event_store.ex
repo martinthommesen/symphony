@@ -414,10 +414,17 @@ defmodule SymphonyElixir.Observability.EventStore do
   defp payload_to_event(_), do: nil
 
   defp do_query(state, filters) do
+    # `apply_since/2` runs FIRST so its event-id high-water mark always
+    # finds the marker in the full chronological stream. If we filtered
+    # by type/severity/issue_identifier before applying `since`, an
+    # event-id `since` whose marker doesn't match the other filters
+    # would get removed early, the split would fail, and the call would
+    # return the entire filtered list — duplicating events on SSE
+    # resume.
     state.events
     |> :queue.to_list()
-    |> Enum.filter(&matches?(&1, filters))
     |> apply_since(filters)
+    |> Enum.filter(&matches?(&1, filters))
     |> apply_limit(filters)
   end
 
