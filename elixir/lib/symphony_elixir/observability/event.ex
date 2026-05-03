@@ -65,7 +65,7 @@ defmodule SymphonyElixir.Observability.Event do
       worker_host: redact_binary(attrs[:worker_host]),
       workspace_path: redact_binary(attrs[:workspace_path]),
       message: redact_binary(attrs[:message]),
-      data: redact_data(attrs[:data])
+      data: normalize_data(attrs[:data])
     }
   end
 
@@ -141,7 +141,10 @@ defmodule SymphonyElixir.Observability.Event do
   defp redact_binary(value) when is_atom(value), do: Atom.to_string(value)
   defp redact_binary(value), do: value
 
-  defp redact_data(nil), do: %{}
+  defp normalize_data(nil), do: %{}
+  defp normalize_data(value), do: redact_data(value)
+
+  defp redact_data(nil), do: nil
   defp redact_data(value) when is_map(value), do: redact_map(value)
   defp redact_data(value) when is_list(value), do: redact_list(value)
   defp redact_data(value) when is_binary(value), do: Redaction.redact(value)

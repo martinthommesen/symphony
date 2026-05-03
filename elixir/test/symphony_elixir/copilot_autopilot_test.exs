@@ -100,8 +100,10 @@ defmodule SymphonyElixir.Copilot.AutopilotTest do
       assert acc.messages == [%{"event" => "hello"}]
       assert hd(acc.raw_lines) =~ ~s({"event":"hello"})
 
-      [msg] = drain_messages()
-      assert {:line, ~s({"event":"hello"})} = msg
+      assert [
+               {:line, ~s({"event":"hello"})},
+               {:json, %{"event" => "hello"}}
+             ] = drain_messages()
     end
 
     test "assembles multiple :noeol chunks then :eol" do
@@ -141,7 +143,7 @@ defmodule SymphonyElixir.Copilot.AutopilotTest do
       second_chunk = "ijklmnop0123456789"
 
       acc = %{empty_acc() | buffer: first_chunk}
-      acc = Autopilot.process_eol(second_chunk, acc, copilot, collector())
+      _acc = Autopilot.process_eol(second_chunk, acc, copilot, collector())
 
       [{:line, line}] = drain_messages()
       refute line =~ "abcdefghijklmnop0123456789"

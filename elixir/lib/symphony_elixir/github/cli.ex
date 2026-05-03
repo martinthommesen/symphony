@@ -134,17 +134,12 @@ defmodule SymphonyElixir.GitHub.CLI do
       {:exit, reason} ->
         {:error, {:runner_exit, reason}}
 
-      # No result yet → past the deadline. Brutal-kill the task and
-      # report the timeout. `Task.shutdown(:brutal_kill)` returns
-      # `nil` if the task was already gone, `{:ok, result}` if it
-      # finished after `Task.yield/2` returned, or `{:exit, reason}`
-      # if a crash raced the kill — handle each case explicitly.
+      # No result yet -> past the deadline. Brutal-kill the task and
+      # report the timeout even if the runner completes while shutdown
+      # races, so callers get deterministic timeout semantics.
       nil ->
-        case Task.shutdown(task, :brutal_kill) do
-          {:ok, result} -> {:ok, result}
-          {:exit, reason} -> {:error, {:runner_exit, reason}}
-          nil -> {:error, :timeout}
-        end
+        Task.shutdown(task, :brutal_kill)
+        {:error, :timeout}
     end
   end
 
