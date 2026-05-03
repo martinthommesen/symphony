@@ -11,13 +11,6 @@ defmodule SymphonyElixir.Tracker do
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
 
-  @optional_callbacks [
-    list_managed_issues: 0,
-    block_issue: 1,
-    unblock_issue: 1,
-    mark_for_retry: 1
-  ]
-
   @doc """
   Optional. Returns all issues currently managed by Symphony — at minimum
   open candidates plus issues bearing any of `running/review/failed/blocked/done`
@@ -43,6 +36,14 @@ defmodule SymphonyElixir.Tracker do
   `running` so the orchestrator picks it up again.
   """
   @callback mark_for_retry(String.t()) :: :ok | {:error, term()}
+
+  # Must come after all referenced @callback declarations.
+  @optional_callbacks [
+    list_managed_issues: 0,
+    block_issue: 1,
+    unblock_issue: 1,
+    mark_for_retry: 1
+  ]
 
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues do
