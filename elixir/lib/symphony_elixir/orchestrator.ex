@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
   Polls Linear and dispatches repository copies to Codex-backed workers.

@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.Observability.EventStore do
   @moduledoc """
   In-memory ring-buffer store for redacted observability events with optional

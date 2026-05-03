@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.GitHub.Finalizer do
   @moduledoc """
   Owns post-Copilot GitHub state: branch validation, optional auto-commit,

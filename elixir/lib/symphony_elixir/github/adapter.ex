@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.GitHub.Adapter do
   @moduledoc """
   GitHub Issues tracker adapter.

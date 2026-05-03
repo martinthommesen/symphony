@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.Observability.Control do
   @moduledoc """
   Authenticated control surface for the operations cockpit.

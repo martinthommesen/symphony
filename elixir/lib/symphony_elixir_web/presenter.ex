@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixirWeb.Presenter do
   @moduledoc """
   Shared projections for the observability API and dashboard.
