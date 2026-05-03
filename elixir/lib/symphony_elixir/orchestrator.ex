@@ -197,6 +197,8 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_codex_token_delta(token_delta)
           |> apply_codex_rate_limits(update)
 
+        emit_worker_update_event(issue_id, updated_running_entry, update, token_delta)
+
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -1424,6 +1426,63 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  # Project a worker update onto an Observability event so `/api/v1/events`
+  # and the SSE stream see the per-turn agent activity, not just the
+  # control/audit events. Redaction happens inside `Event.new/1`.
+  defp emit_worker_update_event(issue_id, running_entry, update, token_delta) do
+    event_atom = update[:event]
+
+    type =
+      case event_atom do
+        :session_started -> :agent_turn_started
+        :turn_completed -> :agent_turn_completed
+        :stream_line -> :agent_stream_line
+        :stalled -> :agent_stalled
+        :timed_out -> :agent_timed_out
+        :token_delta -> :agent_token_delta
+        atom when is_atom(atom) -> ("agent_" <> Atom.to_string(atom)) |> String.to_atom()
+        _ -> :agent_stream_line
+      end
+
+    severity =
+      case event_atom do
+        :stalled -> :warning
+        :timed_out -> :warning
+        :failed -> :error
+        _ -> :info
+      end
+
+    SymphonyElixir.Observability.emit(type, %{
+      severity: severity,
+      issue_id: issue_id,
+      issue_identifier: Map.get(running_entry, :identifier),
+      session_id: Map.get(running_entry, :session_id),
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path),
+      message: codex_event_message(update),
+      data: %{
+        codex_event: codex_event_to_string(event_atom),
+        turn_count: Map.get(running_entry, :turn_count, 0),
+        token_delta: token_delta || %{}
+      }
+    })
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp codex_event_to_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp codex_event_to_string(value), do: to_string(value)
+
+  defp codex_event_message(update) do
+    case update[:payload] || update[:raw] || update[:message] do
+      msg when is_binary(msg) -> msg
+      msg when is_map(msg) -> inspect(msg)
+      _ -> nil
+    end
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

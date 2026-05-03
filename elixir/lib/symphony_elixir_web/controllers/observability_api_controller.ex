@@ -85,10 +85,15 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
       severity: Map.get(params, "severity")
     }
 
+    # SSE catch-up replays should not be silently capped on reconnect.
+    # When the caller does not pass `limit`, replay every event matching
+    # `since`/filters that the in-memory ring buffer still holds. The
+    # ring is bounded by `observability.event_buffer_size`, so this is
+    # already a finite upper bound — no need for an additional default.
     replay_filters =
       filters
       |> Map.put(:since, Map.get(params, "since"))
-      |> Map.put(:limit, parse_limit(Map.get(params, "limit"), 100))
+      |> Map.put(:limit, parse_limit(Map.get(params, "limit"), nil))
 
     case EventStore.subscribe() do
       :ok -> :ok

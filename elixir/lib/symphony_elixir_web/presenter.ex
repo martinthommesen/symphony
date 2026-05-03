@@ -409,38 +409,89 @@ defmodule SymphonyElixirWeb.Presenter do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
-    extra_running =
+    {extra_running, known_after_running} =
+      collect_unknown_snapshot_entries(
+        snapshot,
+        :running,
+        known_ids,
+        &running_to_projection/1
+      )
+
+    {extra_retrying, _known_final} =
+      collect_unknown_snapshot_entries(
+        snapshot,
+        :retrying,
+        known_after_running,
+        &retrying_to_projection/1
+      )
+
+    issues ++ extra_running ++ extra_retrying
+  end
+
+  defp collect_unknown_snapshot_entries(snapshot, key, known_ids, project_fun) do
+    new_entries =
       snapshot
-      |> Map.get(:running, [])
+      |> Map.get(key, [])
       |> Enum.reject(fn entry ->
         is_nil(entry.issue_id) or MapSet.member?(known_ids, entry.issue_id)
       end)
-      |> Enum.map(fn entry ->
-        %{
-          issue_id: entry.issue_id,
-          issue_identifier: entry.identifier,
-          issue_number: parse_issue_number(entry.issue_id),
-          title: nil,
-          state: entry.state,
-          labels: [],
-          assignee_id: nil,
-          priority: nil,
-          branch: nil,
-          pr_url: nil,
-          created_at: nil,
-          updated_at: nil,
-          agent_state: "running",
-          worker_host: Map.get(entry, :worker_host),
-          workspace_path: Map.get(entry, :workspace_path),
-          runtime_seconds: Map.get(entry, :runtime_seconds, 0),
-          turn_count: Map.get(entry, :turn_count, 0),
-          tokens: running_entry_tokens(entry),
-          last_event: entry.last_codex_event,
-          last_error: nil
-        }
+
+    next_known =
+      Enum.reduce(new_entries, known_ids, fn entry, acc ->
+        MapSet.put(acc, entry.issue_id)
       end)
 
-    issues ++ extra_running
+    {Enum.map(new_entries, project_fun), next_known}
+  end
+
+  defp running_to_projection(entry) do
+    %{
+      issue_id: entry.issue_id,
+      issue_identifier: entry.identifier,
+      issue_number: parse_issue_number(entry.issue_id),
+      title: nil,
+      state: entry.state,
+      labels: [],
+      assignee_id: nil,
+      priority: nil,
+      branch: nil,
+      pr_url: nil,
+      created_at: nil,
+      updated_at: nil,
+      agent_state: "running",
+      worker_host: Map.get(entry, :worker_host),
+      workspace_path: Map.get(entry, :workspace_path),
+      runtime_seconds: Map.get(entry, :runtime_seconds, 0),
+      turn_count: Map.get(entry, :turn_count, 0),
+      tokens: running_entry_tokens(entry),
+      last_event: entry.last_codex_event,
+      last_error: nil
+    }
+  end
+
+  defp retrying_to_projection(entry) do
+    %{
+      issue_id: entry.issue_id,
+      issue_identifier: Map.get(entry, :identifier),
+      issue_number: parse_issue_number(entry.issue_id),
+      title: nil,
+      state: "retrying",
+      labels: [],
+      assignee_id: nil,
+      priority: nil,
+      branch: nil,
+      pr_url: nil,
+      created_at: nil,
+      updated_at: nil,
+      agent_state: "retrying",
+      worker_host: Map.get(entry, :worker_host),
+      workspace_path: Map.get(entry, :workspace_path),
+      runtime_seconds: 0,
+      turn_count: 0,
+      tokens: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
+      last_event: nil,
+      last_error: Map.get(entry, :error)
+    }
   end
 
   defp summarize_message(nil), do: nil
