@@ -68,6 +68,28 @@ describe("reducer", () => {
     expect(next.readOnly).toBe(true);
   });
 
+  test("health/received preserves local read-only posture when client has no token", () => {
+    // Initial state mirrors `App` ctor when client.hasControlToken() === false.
+    const initial = initialState({ readOnly: true });
+    const next = reducer(initial, {
+      type: "health/received",
+      health: { status: "ok", capabilities: { control: true, read_only: false } },
+    });
+    // Server says control is enabled, but local client lacks a token —
+    // we must remain read-only so the UI doesn't promise mutations
+    // it cannot deliver.
+    expect(next.readOnly).toBe(true);
+  });
+
+  test("health/received clears read-only only when both local and server allow control", () => {
+    const initial = initialState({ readOnly: false });
+    const next = reducer(initial, {
+      type: "health/received",
+      health: { status: "ok", capabilities: { control: true, read_only: false } },
+    });
+    expect(next.readOnly).toBe(false);
+  });
+
   test("notifications cap at 5", () => {
     let state = initialState();
     for (let i = 0; i < 10; i++) {

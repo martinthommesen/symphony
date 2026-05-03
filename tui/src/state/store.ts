@@ -128,8 +128,19 @@ export function reducer(state: AppState, action: Action): AppState {
       };
 
     case "health/received": {
-      const readOnly = action.health.capabilities?.read_only ?? !action.health.capabilities?.control;
-      return { ...state, health: action.health, readOnly };
+      // Server capability flags describe whether the *backend* would accept
+      // mutating requests, not whether this TUI instance has a token. When
+      // the local client started without one (read_only initialised to
+      // true), keep it that way — otherwise hotkeys would re-enable and
+      // every mutation would fail with `missing_token`. Only allow
+      // health/received to make read_only more restrictive, never less.
+      const serverReadOnly =
+        action.health.capabilities?.read_only ?? !action.health.capabilities?.control;
+      return {
+        ...state,
+        health: action.health,
+        readOnly: state.readOnly || serverReadOnly,
+      };
     }
 
     case "state/received":
