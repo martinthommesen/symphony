@@ -95,7 +95,11 @@ defmodule SymphonyElixirWeb.Presenter do
     port = (settings && Map.get(settings.server, :port)) || Config.server_port() || 0
 
     control_enabled = Control.control_enabled?()
-    orchestrator_alive = is_pid(Process.whereis(orchestrator))
+
+    # `orchestrator` may be an atom, a pid, or a `{name, node}` tuple
+    # (when the endpoint is configured for tests). `Process.whereis/1`
+    # raises on the latter two, so route through `GenServer.whereis/1`.
+    orchestrator_alive = is_pid(GenServer.whereis(orchestrator))
 
     %{
       status: if(orchestrator_alive, do: "ok", else: "degraded"),
@@ -129,6 +133,7 @@ defmodule SymphonyElixirWeb.Presenter do
     issues =
       tracker_issues
       |> Enum.map(&projection_from_tracker(&1, snapshot))
+      |> Enum.reject(&is_nil/1)
       |> merge_running_only_issues(snapshot)
 
     %{

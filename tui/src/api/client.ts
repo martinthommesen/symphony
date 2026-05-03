@@ -158,8 +158,12 @@ export class ApiClient {
       const response = await this.request("GET", path);
       return await response.json();
     } catch (error) {
-      if (error instanceof HttpError) throw error;
-      if (attempt < 2) {
+      // Retry transient 5xx and network/timeout errors. 4xx is permanent
+      // (e.g. 401/403/404) and should fail fast.
+      const retriable =
+        (error instanceof HttpError && error.status >= 500) ||
+        !(error instanceof HttpError);
+      if (retriable && attempt < 2) {
         await sleep(150 * 2 ** attempt);
         return this.getJson(path, attempt + 1);
       }

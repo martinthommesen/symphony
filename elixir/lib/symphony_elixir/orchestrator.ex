@@ -1104,12 +1104,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  @spec pause_polling(GenServer.server()) :: {:ok, map()} | {:error, :unavailable}
+  @type command_result :: {:ok, map()} | {:error, :timeout | :unavailable | term()}
+
+  @spec pause_polling(GenServer.server()) :: command_result()
   def pause_polling(server \\ __MODULE__) do
     safe_call(server, :pause)
   end
 
-  @spec resume_polling(GenServer.server()) :: {:ok, map()} | {:error, :unavailable}
+  @spec resume_polling(GenServer.server()) :: command_result()
   def resume_polling(server \\ __MODULE__) do
     safe_call(server, :resume)
   end
@@ -1122,17 +1124,17 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  @spec stop_issue(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec stop_issue(GenServer.server(), String.t()) :: command_result()
   def stop_issue(server \\ __MODULE__, identifier_or_id) do
     safe_call(server, {:stop_issue, identifier_or_id})
   end
 
-  @spec request_dispatch(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec request_dispatch(GenServer.server(), String.t()) :: command_result()
   def request_dispatch(server \\ __MODULE__, identifier_or_id) do
     safe_call(server, {:dispatch_issue, identifier_or_id})
   end
 
-  @spec retry_issue(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
+  @spec retry_issue(GenServer.server(), String.t()) :: command_result()
   def retry_issue(server \\ __MODULE__, identifier_or_id) do
     safe_call(server, {:retry_issue, identifier_or_id})
   end

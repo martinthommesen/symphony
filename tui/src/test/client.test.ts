@@ -84,6 +84,39 @@ describe("ApiClient", () => {
     }
   });
 
+  test("getJson retries on 5xx but not 4xx", async () => {
+    let attempts = 0;
+    const fetchImpl: typeof fetch = (async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        return jsonResponse({ error: { code: "x", message: "x" } }, 503);
+      }
+      return jsonResponse({ status: "ok" });
+    }) as unknown as typeof fetch;
+
+    const client = new ApiClient({ baseUrl: "http://x", controlToken: null, fetchImpl });
+    const health = await client.health();
+    expect(health.status).toBe("ok");
+    expect(attempts).toBe(3);
+  });
+
+  test("getJson does not retry 4xx", async () => {
+    let attempts = 0;
+    const fetchImpl: typeof fetch = (async () => {
+      attempts += 1;
+      return jsonResponse({ error: { code: "missing_token", message: "no token" } }, 401);
+    }) as unknown as typeof fetch;
+
+    const client = new ApiClient({ baseUrl: "http://x", controlToken: null, fetchImpl });
+    try {
+      await client.health();
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(HttpError);
+    }
+    expect(attempts).toBe(1);
+  });
+
   test("hasControlToken reports presence correctly", () => {
     const a = new ApiClient({ baseUrl: "http://x", controlToken: "t" });
     const b = new ApiClient({ baseUrl: "http://x", controlToken: null });
