@@ -13,18 +13,18 @@
 
 ## Command Builder
 
-`Acpx.CommandBuilder` always uses `Path.expand/1` for the executable and `--workspace` path.  It never passes user input through a shell.  Supported flags include:
+`Acpx.CommandBuilder` builds argv without shell interpolation.  Supported flags include:
 
 | Flag | Source |
 |------|--------|
 | `--agent=<id>` | `agents.registry.*.acpx_agent` |
-| `--workspace=<path>` | `workspace.root` + issue sub-directory |
+| `--cwd=<path>` | Issue workspace path |
 | `--approve=auto` | `acpx.approve_mode` |
 | `--sandbox=default` | `acpx.sandbox` |
 | `--timeout=<seconds>` | `agents.registry.*.timeout_seconds` |
 | `--session-id=<uuid>` | Generated per run |
 
-Custom agent commands (when `custom_acpx_agent_command` is set) are parsed with `OptionParser.split/1` and the `--agent=` flag is injected if missing.
+Custom agent commands (when `custom_acpx_agent_command` is set) are passed as a single `--agent` argv value.
 
 ## Event Translation
 

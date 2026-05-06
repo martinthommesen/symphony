@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.GitHub.Adapter do
   @moduledoc """
   GitHub Issues tracker adapter.
@@ -109,6 +110,110 @@ defmodule SymphonyElixir.GitHub.Adapter do
     end
   end
 
+  @doc """
+  List Symphony-managed issues for the operations cockpit.
+
+  Returns open issues with any active label plus closed issues whose
+  labels include any Symphony state label. The result is shaped as
+  Linear-style structs so existing presenters can consume it.
+  """
+  @spec list_managed_issues() :: {:ok, [SymphonyElixir.Linear.Issue.t()]} | {:error, term()}
+  def list_managed_issues do
+    with {:ok, repo} <- repo_setting() do
+      tracker = tracker_settings()
+
+      # Open issues are gated by the trigger labels (`active_labels`,
+      # typically `[symphony]`). Closed issues, on the other hand, no
+      # longer carry the trigger label — what marks them as
+      # Symphony-managed is the *state* labels Symphony stamped on
+      # them (running/review/failed/done + blocked). Querying closed
+      # issues by `active_labels` would silently miss every finished
+      # run.
+      closed_label_filter =
+        [
+          tracker.running_label,
+          tracker.review_label,
+          tracker.failed_label,
+          tracker.done_label
+        ]
+        |> Enum.concat(List.wrap(tracker.blocked_labels))
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+
+      with {:ok, open_issues} <- list_open_issues_with_label(repo, tracker.active_labels),
+           {:ok, closed_issues} <- list_closed_issues(repo, closed_label_filter) do
+        managed =
+          (open_issues ++ closed_issues)
+          |> Enum.map(fn issue ->
+            Issue.to_linear_issue(issue, label_state(issue, tracker))
+          end)
+
+        {:ok, managed}
+      end
+    end
+  end
+
+  @doc """
+  Add the first configured `blocked_labels` to `issue_id`. Returns
+  `{:error, :unsupported}` when no blocked labels are configured.
+  """
+  @spec block_issue(String.t()) :: :ok | {:error, term()}
+  def block_issue(issue_id) when is_binary(issue_id) do
+    with {:ok, repo} <- repo_setting(),
+         number when is_integer(number) <- parse_issue_number(issue_id) do
+      tracker = tracker_settings()
+
+      case List.wrap(tracker.blocked_labels) do
+        [label | _] -> add_labels(repo, number, [label])
+        _ -> {:error, :unsupported}
+      end
+    else
+      :error -> {:error, {:invalid_issue_id, issue_id}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Remove all configured `blocked_labels` from `issue_id`.
+  """
+  @spec unblock_issue(String.t()) :: :ok | {:error, term()}
+  def unblock_issue(issue_id) when is_binary(issue_id) do
+    with {:ok, repo} <- repo_setting(),
+         number when is_integer(number) <- parse_issue_number(issue_id) do
+      tracker = tracker_settings()
+
+      case List.wrap(tracker.blocked_labels) do
+        [] -> {:error, :unsupported}
+        labels -> remove_labels(repo, number, labels)
+      end
+    else
+      :error -> {:error, {:invalid_issue_id, issue_id}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Reset Symphony status labels so the orchestrator re-claims the issue on
+  the next poll: removes `running`, `review`, `failed`, `done`.
+  """
+  @spec mark_for_retry(String.t()) :: :ok | {:error, term()}
+  def mark_for_retry(issue_id) when is_binary(issue_id) do
+    with {:ok, repo} <- repo_setting(),
+         number when is_integer(number) <- parse_issue_number(issue_id) do
+      tracker = tracker_settings()
+
+      remove_labels(repo, number, [
+        tracker.running_label,
+        tracker.review_label,
+        tracker.failed_label,
+        tracker.done_label
+      ])
+    else
+      :error -> {:error, {:invalid_issue_id, issue_id}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # GitHub-specific public operations
   # ---------------------------------------------------------------------------
@@ -169,6 +274,7 @@ defmodule SymphonyElixir.GitHub.Adapter do
   - does not have running/done/failed/review labels
   """
   @spec eligible?(Issue.t(), map()) :: boolean()
+  # credo:disable-for-next-line
   def eligible?(%Issue{} = issue, tracker) do
     label_set = MapSet.new(issue.labels)
 

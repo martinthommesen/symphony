@@ -11,6 +11,45 @@ defmodule SymphonyElixir.Tracker do
   @callback create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   @callback update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
 
+  @doc """
+  Optional. Returns all issues currently managed by Symphony — at minimum
+  open candidates plus issues bearing any of `running/review/failed/blocked/done`
+  labels. Adapters that cannot enumerate this should return
+  `{:error, :unsupported}`.
+  """
+  @callback list_managed_issues() :: {:ok, [term()]} | {:error, term()}
+
+  @doc """
+  Mark `issue_id` as blocked from dispatch consideration. The adapter
+  decides how — GitHub adds a configured label, Linear may move the
+  issue to a `Blocked` workflow state, an in-memory adapter can flip a
+  flag. Adapters that cannot represent "blocked" return
+  `{:error, :unsupported}`.
+  """
+  @callback block_issue(String.t()) :: :ok | {:error, term()}
+
+  @doc """
+  Reverse a previous `block_issue/1` so the issue becomes a dispatch
+  candidate again.
+  """
+  @callback unblock_issue(String.t()) :: :ok | {:error, term()}
+
+  @doc """
+  Reset the adapter-side bookkeeping for `issue_id` so the orchestrator
+  re-claims it on the next poll. Concretely: any state the adapter uses
+  to mark "currently running" or "terminal" (labels in GitHub, workflow
+  states in Linear) should be cleared.
+  """
+  @callback mark_for_retry(String.t()) :: :ok | {:error, term()}
+
+  # Must come after all referenced @callback declarations.
+  @optional_callbacks [
+    list_managed_issues: 0,
+    block_issue: 1,
+    unblock_issue: 1,
+    mark_for_retry: 1
+  ]
+
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues do
     adapter().fetch_candidate_issues()
@@ -34,6 +73,50 @@ defmodule SymphonyElixir.Tracker do
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     adapter().update_issue_state(issue_id, state_name)
+  end
+
+  @spec list_managed_issues() :: {:ok, [term()]} | {:error, term()}
+  def list_managed_issues do
+    a = adapter()
+
+    if function_exported?(a, :list_managed_issues, 0) do
+      a.list_managed_issues()
+    else
+      {:error, :unsupported}
+    end
+  end
+
+  @spec block_issue(String.t()) :: :ok | {:error, term()}
+  def block_issue(issue_id) do
+    a = adapter()
+
+    if function_exported?(a, :block_issue, 1) do
+      a.block_issue(issue_id)
+    else
+      {:error, :unsupported}
+    end
+  end
+
+  @spec unblock_issue(String.t()) :: :ok | {:error, term()}
+  def unblock_issue(issue_id) do
+    a = adapter()
+
+    if function_exported?(a, :unblock_issue, 1) do
+      a.unblock_issue(issue_id)
+    else
+      {:error, :unsupported}
+    end
+  end
+
+  @spec mark_for_retry(String.t()) :: :ok | {:error, term()}
+  def mark_for_retry(issue_id) do
+    a = adapter()
+
+    if function_exported?(a, :mark_for_retry, 1) do
+      a.mark_for_retry(issue_id)
+    else
+      {:error, :unsupported}
+    end
   end
 
   @spec adapter() :: module()

@@ -97,7 +97,7 @@ defmodule SymphonyElixir.Workspace do
   defp ensure_git_worktree(workspace, issue_context, workspace_config) do
     with {:ok, repo_root} <- git_repo_root(),
          :ok <- maybe_fetch(repo_root, workspace_config),
-         :ok <- maybe_prepare_existing_worktree(workspace, workspace_config),
+         :ok <- maybe_prepare_existing_worktree(repo_root, workspace, workspace_config),
          {:ok, created?} <- maybe_add_worktree(repo_root, workspace, issue_context, workspace_config),
          :ok <- maybe_handle_dirty_worktree(workspace, workspace_config),
          :ok <- maybe_rebase_worktree(workspace, workspace_config),
@@ -122,11 +122,11 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_prepare_existing_worktree(workspace, %{worktree_strategy: "fresh_per_attempt"}) do
-    if File.exists?(workspace), do: remove_existing_worktree(workspace), else: :ok
+  defp maybe_prepare_existing_worktree(repo_root, workspace, %{worktree_strategy: "fresh_per_attempt"}) do
+    if File.exists?(workspace), do: remove_existing_worktree(repo_root, workspace), else: :ok
   end
 
-  defp maybe_prepare_existing_worktree(_workspace, _workspace_config), do: :ok
+  defp maybe_prepare_existing_worktree(_repo_root, _workspace, _workspace_config), do: :ok
 
   defp maybe_add_worktree(repo_root, workspace, issue_context, workspace_config) do
     if File.dir?(Path.join(workspace, ".git")) or File.exists?(Path.join(workspace, ".git")) do
@@ -234,8 +234,8 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp remove_existing_worktree(workspace) do
-    case Git.cmd(["worktree", "remove", "--force", workspace], stderr_to_stdout: true) do
+  defp remove_existing_worktree(repo_root, workspace) do
+    case Git.cmd(["-C", repo_root, "worktree", "remove", "--force", workspace], stderr_to_stdout: true) do
       {_output, 0} -> :ok
       _ -> File.rm_rf!(workspace)
     end

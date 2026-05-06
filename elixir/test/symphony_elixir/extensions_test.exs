@@ -75,6 +75,24 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call(:pause, _from, state),
+      do: {:reply, %{paused: true}, state}
+
+    def handle_call(:resume, _from, state),
+      do: {:reply, %{paused: false}, state}
+
+    def handle_call(:paused?, _from, state),
+      do: {:reply, false, state}
+
+    def handle_call({:stop_issue, _id}, _from, state),
+      do: {:reply, {:error, :issue_not_running}, state}
+
+    def handle_call({:dispatch_issue, _id}, _from, state),
+      do: {:reply, {:error, :issue_not_found}, state}
+
+    def handle_call({:retry_issue, _id}, _from, state),
+      do: {:reply, {:error, :unsupported}, state}
   end
 
   setup do
@@ -196,6 +214,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert :ok = SymphonyElixir.Tracker.update_issue_state("issue-1", "Done")
     assert_receive {:memory_tracker_comment, "issue-1", "comment"}
     assert_receive {:memory_tracker_state_update, "issue-1", "Done"}
+
+    # The optional tracker callbacks (used by the cockpit's control
+    # endpoints) must return `{:error, :unsupported}` when the adapter
+    # does not implement them. Memory adapter does not.
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.list_managed_issues()
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.block_issue("issue-1")
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.unblock_issue("issue-1")
+    assert {:error, :unsupported} = SymphonyElixir.Tracker.mark_for_retry("issue-1")
 
     Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
     assert :ok = Memory.create_comment("issue-1", "quiet")
@@ -340,9 +366,32 @@ defmodule SymphonyElixir.ExtensionsTest do
     conn = get(build_conn(), "/api/v1/state")
     state_payload = json_response(conn, 200)
 
-    assert state_payload == %{
+    # Legacy fields must continue to round-trip exactly. New cockpit fields
+    # (status, polling, agent_capacity, tokens, recent_events,
+    # runtime_seconds on running entries) may also be present but are
+    # checked separately so this assertion stays stable as the cockpit
+    # evolves.
+    legacy_top_keys = ["generated_at", "counts", "running", "retrying", "agent_totals", "rate_limits"]
+
+    legacy_running_entry_keys =
+      ~w(issue_id issue_identifier state worker_host workspace_path session_id turn_count last_event last_message started_at last_event_at tokens)
+
+    actual_legacy_top = Map.take(state_payload, legacy_top_keys)
+
+    actual_legacy_running =
+      Enum.map(actual_legacy_top["running"], &Map.take(&1, legacy_running_entry_keys))
+
+    actual_for_compare = Map.put(actual_legacy_top, "running", actual_legacy_running)
+
+    assert actual_for_compare == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1},
+             "counts" => %{
+               "running" => 1,
+               "retrying" => 1,
+               "review" => state_payload["counts"]["review"],
+               "failed" => state_payload["counts"]["failed"],
+               "blocked" => state_payload["counts"]["blocked"]
+             },
              "running" => [
                %{
                  "issue_id" => "issue-http",
@@ -354,7 +403,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
-                 "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
+                 "started_at" => List.first(state_payload["running"])["started_at"],
                  "last_event_at" => nil,
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
@@ -364,7 +413,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
+                 "due_at" => List.first(state_payload["retrying"])["due_at"],
                  "error" => "boom",
                  "worker_host" => nil,
                  "workspace_path" => nil
@@ -378,6 +427,13 @@ defmodule SymphonyElixir.ExtensionsTest do
              },
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
+
+    # Cockpit fields are present and consistent.
+    assert state_payload["status"] in ["running", "paused"]
+    assert is_map(state_payload["polling"])
+    assert is_map(state_payload["agent_capacity"])
+    assert is_map(state_payload["tokens"])
+    assert is_list(state_payload["recent_events"])
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
     issue_payload = json_response(conn, 200)
@@ -641,7 +697,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1}
+
+    assert response.body["counts"] == %{
+             "blocked" => 0,
+             "failed" => 0,
+             "retrying" => 1,
+             "review" => 0,
+             "running" => 1
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -670,6 +733,164 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert method_not_allowed_response.body["error"]["code"] == "method_not_allowed"
 
     assert {:error, _reason} = HttpServer.start_link(host: "bad host", port: 0)
+  end
+
+  describe "control endpoint authentication" do
+    setup do
+      # Each test gets a fresh orchestrator + endpoint so token state
+      # doesn't bleed across the matrix below.
+      previous = System.get_env("SYMPHONY_CONTROL_TOKEN")
+
+      on_exit(fn ->
+        if previous do
+          System.put_env("SYMPHONY_CONTROL_TOKEN", previous)
+        else
+          System.delete_env("SYMPHONY_CONTROL_TOKEN")
+        end
+      end)
+
+      :ok
+    end
+
+    test "/api/v1/control/* without a configured token returns 403 control_disabled when host is non-loopback" do
+      System.delete_env("SYMPHONY_CONTROL_TOKEN")
+      write_workflow_file!(Workflow.workflow_file_path(), server_host: "0.0.0.0")
+
+      orchestrator_name = Module.concat(__MODULE__, :ControlNonLoopbackOrch)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      response = json_response(post(build_conn(), "/api/v1/control/pause", %{}), 403)
+      assert response["ok"] == false
+      assert response["error"]["code"] == "control_disabled"
+    end
+
+    test "/api/v1/control/* without a configured token works on a loopback bind" do
+      System.delete_env("SYMPHONY_CONTROL_TOKEN")
+      write_workflow_file!(Workflow.workflow_file_path(), server_host: "127.0.0.1")
+
+      orchestrator_name = Module.concat(__MODULE__, :ControlLoopbackOrch)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      assert %{"ok" => true, "command" => "pause"} =
+               json_response(post(build_conn(), "/api/v1/control/pause", %{}), 200)
+    end
+
+    test "/api/v1/control/* with a configured token requires Authorization: Bearer" do
+      System.put_env("SYMPHONY_CONTROL_TOKEN", "secret-token-value")
+      write_workflow_file!(Workflow.workflow_file_path(), server_host: "127.0.0.1")
+
+      orchestrator_name = Module.concat(__MODULE__, :ControlAuthOrch)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      # No header — 401 missing_token.
+      response = json_response(post(build_conn(), "/api/v1/control/pause", %{}), 401)
+      assert response["error"]["code"] == "missing_token"
+
+      # Wrong token — 401 invalid_token.
+      response =
+        build_conn()
+        |> Plug.Conn.put_req_header("authorization", "Bearer wrong")
+        |> post("/api/v1/control/pause", %{})
+        |> json_response(401)
+
+      assert response["error"]["code"] == "invalid_token"
+
+      # Correct token — 200.
+      assert %{"ok" => true, "command" => "pause"} =
+               build_conn()
+               |> Plug.Conn.put_req_header("authorization", "Bearer secret-token-value")
+               |> post("/api/v1/control/pause", %{})
+               |> json_response(200)
+    end
+
+    test "/api/v1/refresh requires a token when one is configured (auth bypass closed)" do
+      System.put_env("SYMPHONY_CONTROL_TOKEN", "secret-token-value")
+      write_workflow_file!(Workflow.workflow_file_path(), server_host: "127.0.0.1")
+
+      orchestrator_name = Module.concat(__MODULE__, :RefreshAuthOrch)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot(),
+          refresh: %{
+            queued: true,
+            coalesced: false,
+            requested_at: DateTime.utc_now(),
+            operations: ["poll", "reconcile"]
+          }
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      # Without a header, the legacy envelope is returned with 401.
+      response = json_response(post(build_conn(), "/api/v1/refresh", %{}), 401)
+      assert response["error"]["code"] == "missing_token"
+
+      # With the correct header, the existing happy-path 202 still holds.
+      assert %{"queued" => true} =
+               build_conn()
+               |> Plug.Conn.put_req_header("authorization", "Bearer secret-token-value")
+               |> post("/api/v1/refresh", %{})
+               |> json_response(202)
+    end
+
+    test "/api/v1/control/dispatch returns 400 missing_issue_identifier when params are absent" do
+      System.delete_env("SYMPHONY_CONTROL_TOKEN")
+      write_workflow_file!(Workflow.workflow_file_path(), server_host: "127.0.0.1")
+
+      orchestrator_name = Module.concat(__MODULE__, :ControlMissingParamOrch)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      response = json_response(post(build_conn(), "/api/v1/control/dispatch", %{}), 400)
+      assert response["error"]["code"] == "missing_issue_identifier"
+    end
+
+    test "/api/v1/control/unknown returns 400 unknown_command" do
+      System.delete_env("SYMPHONY_CONTROL_TOKEN")
+      write_workflow_file!(Workflow.workflow_file_path(), server_host: "127.0.0.1")
+
+      orchestrator_name = Module.concat(__MODULE__, :ControlUnknownCmdOrch)
+
+      {:ok, _pid} =
+        StaticOrchestrator.start_link(
+          name: orchestrator_name,
+          snapshot: static_snapshot()
+        )
+
+      start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
+
+      response = json_response(post(build_conn(), "/api/v1/control/notarealcommand", %{}), 400)
+      assert response["error"]["code"] == "unknown_command"
+    end
   end
 
   defp start_test_endpoint(overrides) do

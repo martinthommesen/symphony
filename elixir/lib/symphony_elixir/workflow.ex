@@ -91,14 +91,15 @@ defmodule SymphonyElixir.Workflow do
     case front_matter_yaml_to_map(front_matter_lines) do
       {:ok, front_matter} ->
         prompt = Enum.join(prompt_lines, "\n") |> String.trim()
-        config = load_external_config(config_path, front_matter)
 
-        {:ok,
-         %{
-           config: config,
-           prompt: prompt,
-           prompt_template: prompt
-         }}
+        with {:ok, config} <- load_external_config(config_path, front_matter) do
+          {:ok,
+           %{
+             config: config,
+             prompt: prompt,
+             prompt_template: prompt
+           }}
+        end
 
       {:error, :workflow_front_matter_not_a_map} ->
         {:error, :workflow_front_matter_not_a_map}
@@ -112,12 +113,18 @@ defmodule SymphonyElixir.Workflow do
     case File.read(config_path) do
       {:ok, yaml} ->
         case YamlElixir.read_from_string(yaml) do
-          {:ok, decoded} when is_map(decoded) -> decoded
-          _ -> front_matter
+          {:ok, decoded} when is_map(decoded) ->
+            {:ok, decoded}
+
+          {:ok, _decoded} ->
+            {:error, {:invalid_external_config, config_path, :config_not_a_map}}
+
+          {:error, reason} ->
+            {:error, {:invalid_external_config, config_path, reason}}
         end
 
       {:error, _reason} ->
-        front_matter
+        {:ok, front_matter}
     end
   end
 

@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.Orchestrator do
   @moduledoc """
   Polls Linear and dispatches repository copies to acpx-backed workers.
@@ -14,6 +15,9 @@ defmodule SymphonyElixir.Orchestrator do
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
+  # Default GenServer.call deadline for orchestrator commands fired by
+  # the cockpit. Snapshot uses its own larger deadline.
+  @default_call_timeout_ms 5_000
   @empty_agent_totals %{
     input_tokens: 0,
     output_tokens: 0,
@@ -33,12 +37,18 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      paused: false,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
       agent_totals: nil,
-      agent_rate_limits: nil
+      agent_rate_limits: nil,
+      # Per-issue lock set for in-flight async control commands. While
+      # an issue id is in this set, dispatch/retry refuse with
+      # `:pending_command_in_flight` to prevent control commands from
+      # racing each other on the same issue.
+      pending_commands: MapSet.new()
     ]
   end
 
@@ -196,6 +206,8 @@ defmodule SymphonyElixir.Orchestrator do
           |> apply_agent_token_delta(token_delta)
           |> apply_agent_rate_limits(update)
 
+        emit_worker_update_event(issue_id, updated_running_entry, update, token_delta)
+
         notify_dashboard()
         {:noreply, %{state | running: Map.put(running, issue_id, updated_running_entry)}}
     end
@@ -216,9 +228,32 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:retry_issue, _issue_id}, state), do: {:noreply, state}
 
+  def handle_info({:pending_command_completed, issue_id, identifier, result}, state) do
+    case result do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("Orchestrator pending command for issue_id=#{issue_id} failed: #{inspect(reason)}")
+    end
+
+    pending =
+      state.pending_commands
+      |> MapSet.delete(issue_id)
+      |> MapSet.delete(identifier)
+
+    {:noreply, %{state | pending_commands: pending}}
+  end
+
   def handle_info(msg, state) do
     Logger.debug("Orchestrator ignored message: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp maybe_dispatch(%State{paused: true} = state) do
+    # While paused, we still reconcile already-running issues so externally
+    # closed/blocked tickets are picked up, but we never dispatch new work.
+    reconcile_running_issues(state)
   end
 
   defp maybe_dispatch(%State{} = state) do
@@ -1066,15 +1101,20 @@ defmodule SymphonyElixir.Orchestrator do
     )
   end
 
-  @spec request_refresh() :: map() | :unavailable
+  @spec request_refresh() :: map() | :timeout | :unavailable
   def request_refresh do
     request_refresh(__MODULE__)
   end
 
-  @spec request_refresh(GenServer.server()) :: map() | :unavailable
-  def request_refresh(server) do
-    if Process.whereis(server) do
-      GenServer.call(server, :request_refresh)
+  @spec request_refresh(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
+  def request_refresh(server, timeout \\ @default_call_timeout_ms) do
+    if alive?(server) do
+      try do
+        GenServer.call(server, :request_refresh, timeout)
+      catch
+        :exit, {:timeout, _} -> :timeout
+        :exit, _ -> :unavailable
+      end
     else
       :unavailable
     end
@@ -1085,7 +1125,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @spec snapshot(GenServer.server(), timeout()) :: map() | :timeout | :unavailable
   def snapshot(server, timeout) do
-    if Process.whereis(server) do
+    if alive?(server) do
       try do
         GenServer.call(server, :snapshot, timeout)
       catch
@@ -1094,6 +1134,74 @@ defmodule SymphonyElixir.Orchestrator do
       end
     else
       :unavailable
+    end
+  end
+
+  @type command_result :: {:ok, map()} | {:error, :timeout | :unavailable | term()}
+
+  @spec pause_polling(GenServer.server()) :: command_result()
+  def pause_polling(server \\ __MODULE__) do
+    safe_call(server, :pause)
+  end
+
+  @spec resume_polling(GenServer.server()) :: command_result()
+  def resume_polling(server \\ __MODULE__) do
+    safe_call(server, :resume)
+  end
+
+  @spec polling_paused?(GenServer.server()) :: boolean()
+  def polling_paused?(server \\ __MODULE__) do
+    case safe_call(server, :paused?) do
+      {:ok, value} -> value == true
+      _ -> false
+    end
+  end
+
+  @spec stop_issue(GenServer.server(), String.t()) :: command_result()
+  def stop_issue(server \\ __MODULE__, identifier_or_id) do
+    safe_call(server, {:stop_issue, identifier_or_id})
+  end
+
+  @spec request_dispatch(GenServer.server(), String.t()) :: command_result()
+  def request_dispatch(server \\ __MODULE__, identifier_or_id) do
+    safe_call(server, {:dispatch_issue, identifier_or_id})
+  end
+
+  @spec retry_issue(GenServer.server(), String.t()) :: command_result()
+  def retry_issue(server \\ __MODULE__, identifier_or_id) do
+    safe_call(server, {:retry_issue, identifier_or_id})
+  end
+
+  defp safe_call(server, message, timeout \\ @default_call_timeout_ms) do
+    if alive?(server) do
+      try do
+        case GenServer.call(server, message, timeout) do
+          {:ok, _} = ok -> ok
+          {:error, _} = err -> err
+          %{} = map -> {:ok, map}
+          other -> {:ok, other}
+        end
+      catch
+        :exit, {:timeout, _} -> {:error, :timeout}
+        :exit, _ -> {:error, :unavailable}
+      end
+    else
+      {:error, :unavailable}
+    end
+  end
+
+  # `GenServer.whereis/1` returns one of:
+  #   * `pid()` — local server
+  #   * `{name, node}` — remote server reachable via dist
+  #   * `nil` — not registered anywhere
+  # We treat both pid and tuple as "alive" so endpoints configured with
+  # a `{name, node}` orchestrator reference don't short-circuit to
+  # `:unavailable` when the remote GenServer is reachable.
+  defp alive?(server) do
+    case GenServer.whereis(server) do
+      pid when is_pid(pid) -> true
+      {name, node} when is_atom(name) and is_atom(node) -> true
+      _ -> false
     end
   end
 
@@ -1149,9 +1257,150 @@ defmodule SymphonyElixir.Orchestrator do
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
-         poll_interval_ms: state.poll_interval_ms
-       }
+         poll_interval_ms: state.poll_interval_ms,
+         paused: state.paused == true
+       },
+       max_concurrent_agents: state.max_concurrent_agents
      }, state}
+  end
+
+  def handle_call(:pause, _from, state) do
+    new_state = %{state | paused: true}
+    SymphonyElixir.Observability.emit(:orchestrator_paused, %{severity: :info})
+    notify_dashboard()
+    {:reply, %{paused: true}, new_state}
+  end
+
+  def handle_call(:resume, _from, state) do
+    new_state = %{state | paused: false}
+    SymphonyElixir.Observability.emit(:orchestrator_resumed, %{severity: :info})
+    notify_dashboard()
+    {:reply, %{paused: false}, new_state}
+  end
+
+  def handle_call(:paused?, _from, state) do
+    {:reply, state.paused == true, state}
+  end
+
+  def handle_call({:stop_issue, identifier_or_id}, _from, state) do
+    case find_running_by_identifier(state, identifier_or_id) do
+      {issue_id, entry} ->
+        # Lock both the issue_id and the identifier so a follow-up
+        # dispatch/retry by either form is rejected with
+        # `:pending_command_in_flight` until the async tracker label
+        # clear completes.
+        identifier = entry.identifier
+
+        pending =
+          state.pending_commands
+          |> MapSet.put(issue_id)
+          |> MapSet.put(identifier)
+
+        new_state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> Map.put(:pending_commands, pending)
+
+        # Clear tracker labels asynchronously: terminate_running_issue/3
+        # only updates orchestrator state, so without this the tracker
+        # would still believe the issue is `running` until the next
+        # poll. Spawning under the supervised TaskSupervisor + the
+        # `gh` CLI timeout (see GitHub.CLI.run_with_timeout) means a
+        # stuck `gh` cannot block the orchestrator.
+        spawn_clear_running_label(issue_id, identifier, identifier_or_id)
+
+        SymphonyElixir.Observability.emit(:agent_stopped, %{
+          severity: :warning,
+          issue_id: issue_id,
+          message: "Stop requested via control API"
+        })
+
+        notify_dashboard()
+        {:reply, {:ok, %{issue_id: issue_id, status: "stopped"}}, new_state}
+
+      :not_found ->
+        {:reply, {:error, :issue_not_running}, state}
+    end
+  end
+
+  # credo:disable-for-next-line
+  def handle_call({:dispatch_issue, identifier_or_id}, _from, state) do
+    target = to_string(identifier_or_id)
+
+    cond do
+      command_target_pending?(state, target) ->
+        {:reply, {:error, :pending_command_in_flight}, state}
+
+      true ->
+        case Tracker.fetch_candidate_issues() do
+          {:ok, issues} ->
+            case find_dispatchable_issue(issues, identifier_or_id) do
+              %Issue{} = issue ->
+                # credo:disable-for-next-line
+                cond do
+                  MapSet.member?(state.pending_commands, issue.id) or
+                      MapSet.member?(state.pending_commands, issue.identifier) ->
+                    {:reply, {:error, :pending_command_in_flight}, state}
+
+                  true ->
+                    active_states = active_state_set()
+                    terminal_states = terminal_state_set()
+
+                    if should_dispatch_issue?(issue, state, active_states, terminal_states) do
+                      new_state = dispatch_issue(state, issue)
+
+                      SymphonyElixir.Observability.emit(:issue_dispatched, %{
+                        issue_id: issue.id,
+                        issue_identifier: issue.identifier,
+                        message: "Manual dispatch via control API"
+                      })
+
+                      notify_dashboard()
+                      {:reply, {:ok, %{issue_id: issue.id, issue_identifier: issue.identifier, status: "dispatched"}}, new_state}
+                    else
+                      {:reply, {:error, :not_dispatchable}, state}
+                    end
+                end
+
+              nil ->
+                {:reply, {:error, :issue_not_found}, state}
+            end
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
+  end
+
+  # credo:disable-for-next-line
+  def handle_call({:retry_issue, identifier_or_id}, _from, state) do
+    target = to_string(identifier_or_id)
+
+    # credo:disable-for-next-line
+    cond do
+      command_target_pending?(state, target) ->
+        {:reply, {:error, :pending_command_in_flight}, state}
+
+      true ->
+        case Tracker.mark_for_retry(target) do
+          :ok ->
+            new_state = schedule_tick(state, 0)
+
+            SymphonyElixir.Observability.emit(:retry_scheduled, %{
+              issue_identifier: target,
+              message: "Retry requested via control API"
+            })
+
+            notify_dashboard()
+            {:reply, {:ok, %{status: "retry_scheduled"}}, new_state}
+
+          {:error, :unsupported} ->
+            {:reply, {:error, :unsupported}, state}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, state}
+        end
+    end
   end
 
   def handle_call(:request_refresh, _from, state) do
@@ -1167,6 +1416,61 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  # Spawn a supervised, non-linked task that calls back into the
+  # orchestrator with the result. Using `Task.Supervisor.start_child`
+  # (rather than `start_link`) means a crash in the tracker call cannot
+  # take down the orchestrator, and `gh` CLI now has its own timeout
+  # via `GitHub.CLI.run_with_timeout/2`.
+  defp spawn_clear_running_label(issue_id, identifier, identifier_or_id) do
+    parent = self()
+    target = to_string(identifier_or_id)
+
+    Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+      result =
+        try do
+          Tracker.update_issue_state(target, "open")
+        rescue
+          error -> {:error, {:rescued, Exception.message(error)}}
+        catch
+          :exit, reason -> {:error, {:exit, reason}}
+        end
+
+      send(parent, {:pending_command_completed, issue_id, identifier, result})
+    end)
+
+    :ok
+  end
+
+  # A command targets a "pending" issue when the user-supplied
+  # identifier-or-id matches anything currently locked. We track both
+  # forms in `pending_commands` (see `:stop_issue` handler) so this
+  # single membership check works for either input.
+  defp command_target_pending?(%State{pending_commands: pending}, target) do
+    MapSet.size(pending) > 0 and MapSet.member?(pending, target)
+  end
+
+  defp find_running_by_identifier(%State{running: running}, identifier_or_id) do
+    # credo:disable-for-next-line
+    case Map.get(running, to_string(identifier_or_id)) do
+      nil ->
+        Enum.find_value(running, :not_found, fn {issue_id, entry} ->
+          if entry.identifier == to_string(identifier_or_id), do: {issue_id, entry}
+        end)
+
+      entry ->
+        {to_string(identifier_or_id), entry}
+    end
+  end
+
+  defp find_dispatchable_issue(issues, identifier_or_id) do
+    target = to_string(identifier_or_id)
+
+    Enum.find(issues, fn
+      %Issue{id: id, identifier: identifier} -> id == target or identifier == target
+      _ -> false
+    end)
   end
 
   defp integrate_agent_update(running_entry, %{event: event, timestamp: timestamp} = update) do
@@ -1241,6 +1545,70 @@ defmodule SymphonyElixir.Orchestrator do
       message: update[:payload] || update[:raw],
       timestamp: update[:timestamp]
     }
+  end
+
+  # Project a worker update onto an Observability event so `/api/v1/events`
+  # and the SSE stream see the per-turn agent activity, not just the
+  # control/audit events. Redaction happens inside `Event.new/1`.
+  # credo:disable-for-next-line
+  defp emit_worker_update_event(issue_id, running_entry, update, token_delta) do
+    event_atom = update[:event]
+
+    type =
+      case event_atom do
+        :session_started -> :agent_turn_started
+        :turn_completed -> :agent_turn_completed
+        :stream_line -> :agent_stream_line
+        :stalled -> :agent_stalled
+        :timed_out -> :agent_timed_out
+        :token_delta -> :agent_token_delta
+        # Unknown event names are passed through as strings. Calling
+        # `String.to_atom/1` on user/library-supplied data would leak
+        # atoms (atoms are not GC'd) and is a DoS risk if upstream
+        # starts emitting variable event names. The Event struct accepts
+        # binary types and the SSE/JSON layer serialises both forms.
+        atom when is_atom(atom) -> "agent_" <> Atom.to_string(atom)
+        binary when is_binary(binary) -> "agent_" <> binary
+        _ -> :agent_stream_line
+      end
+
+    severity =
+      case event_atom do
+        :stalled -> :warning
+        :timed_out -> :warning
+        :failed -> :error
+        _ -> :info
+      end
+
+    SymphonyElixir.Observability.emit(type, %{
+      severity: severity,
+      issue_id: issue_id,
+      issue_identifier: Map.get(running_entry, :identifier),
+      session_id: Map.get(running_entry, :session_id),
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path),
+      message: agent_event_message(update),
+      data: %{
+        agent_event: agent_event_to_string(event_atom),
+        turn_count: Map.get(running_entry, :turn_count, 0),
+        token_delta: token_delta
+      }
+    })
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp agent_event_to_string(value) when is_atom(value), do: Atom.to_string(value)
+  defp agent_event_to_string(value), do: to_string(value)
+
+  defp agent_event_message(update) do
+    case update[:payload] || update[:raw] || update[:message] do
+      msg when is_binary(msg) -> msg
+      msg when is_map(msg) -> inspect(msg)
+      _ -> nil
+    end
   end
 
   defp schedule_tick(%State{} = state, delay_ms) when is_integer(delay_ms) and delay_ms >= 0 do

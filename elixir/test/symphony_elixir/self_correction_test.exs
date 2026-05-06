@@ -275,7 +275,7 @@ defmodule SymphonyElixir.SelfCorrectionTest do
 
     test "fails config invalid immediately" do
       ctx = context(attempt: 1)
-      assert {:fail, "invalid config: fix WORKFLOW.md"} = SelfCorrection.recover(:config_invalid, ctx, sc_config())
+      assert {:fail, "invalid config: fix .symphony/config.yml"} = SelfCorrection.recover(:config_invalid, ctx, sc_config())
     end
 
     test "fails unclassified failure" do

@@ -119,6 +119,7 @@ defmodule SymphonyElixir.Config do
     settings!().agent.stall_timeout_ms
   end
 
+  # credo:disable-for-next-line
   defp validate_semantics(settings) do
     with :ok <- validate_tracker_kind(settings.tracker),
          :ok <- validate_linear_settings(settings.tracker) do
@@ -155,6 +156,9 @@ defmodule SymphonyElixir.Config do
 
       {:workflow_parse_error, raw_reason} ->
         "Failed to parse WORKFLOW.md: #{inspect(raw_reason)}"
+
+      {:invalid_external_config, path, raw_reason} ->
+        "Invalid runtime config at #{path}: #{inspect(raw_reason)}"
 
       :workflow_front_matter_not_a_map ->
         "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"

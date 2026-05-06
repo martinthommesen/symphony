@@ -15,7 +15,7 @@ The default prefix is `symphony/agent/`.  You can change it with:
 ```yaml
 agents:
   routing:
-    required_label_prefix: symphony/agent/
+    label_prefix: symphony/agent/
 ```
 
 ## Registry
@@ -45,7 +45,7 @@ agents:
 | `display_name` | Human-readable name for dashboards. |
 | `issue_label` | Exact GitHub label that triggers this agent. |
 | `acpx_agent` | The `--agent=` value passed to acpx. |
-| `custom_acpx_agent_command` | Optional full command override (replaces acpx invocation). |
+| `custom_acpx_agent_command` | Optional custom agent command passed to acpx via `--agent`. |
 | `timeout_seconds` | Max wall-clock time for a single run. |
 | `ttl_seconds` | Session TTL before acpx forces a new context. |
 | `max_attempts` | Max retries for this agent per issue. |
@@ -61,12 +61,10 @@ An issue with more than one matching agent label is ambiguous.  The default poli
 ```yaml
 agents:
   routing:
-    multi_agent_policy: reject   # or "first" or "all"
+    multi_agent_policy: reject
 ```
 
 * `reject` – skip the issue and log a warning.
-* `first` – pick the first match in registry order.
-* `all` – dispatch to every matching agent sequentially (rarely useful).
 
 ## Blocked / Running / Review Checks
 
@@ -86,7 +84,7 @@ You can define label aliases so that legacy labels still work:
 ```yaml
 agents:
   routing:
-    label_aliases:
+    aliases:
       codex-agent: codex
       ai-copilot: copilot
 ```

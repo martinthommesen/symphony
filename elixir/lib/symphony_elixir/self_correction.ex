@@ -233,7 +233,7 @@ defmodule SymphonyElixir.SelfCorrection do
   end
 
   defp dispatch_recover(:config_invalid, _ctx, _cfg) do
-    return_fail("invalid config: fix WORKFLOW.md")
+    return_fail("invalid config: fix .symphony/config.yml")
   end
 
   defp dispatch_recover(:workspace_corrupt, _ctx, cfg) do

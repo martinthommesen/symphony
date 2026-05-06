@@ -638,14 +638,31 @@ defmodule SymphonyElixir.Config.Schema do
       field(:dashboard_enabled, :boolean, default: true)
       field(:refresh_ms, :integer, default: 1_000)
       field(:render_interval_ms, :integer, default: 16)
+      field(:event_buffer_size, :integer, default: 5_000)
+      field(:jsonl_enabled, :boolean, default: true)
+      field(:jsonl_path, :string, default: ".symphony/logs/events.jsonl")
+      field(:control_token_file, :string, default: ".symphony/control-token")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:dashboard_enabled, :refresh_ms, :render_interval_ms], empty_values: [])
+      |> cast(
+        attrs,
+        [
+          :dashboard_enabled,
+          :refresh_ms,
+          :render_interval_ms,
+          :event_buffer_size,
+          :jsonl_enabled,
+          :jsonl_path,
+          :control_token_file
+        ],
+        empty_values: []
+      )
       |> validate_number(:refresh_ms, greater_than: 0)
       |> validate_number(:render_interval_ms, greater_than: 0)
+      |> validate_number(:event_buffer_size, greater_than: 0)
     end
   end
 

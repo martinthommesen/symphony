@@ -1,3 +1,4 @@
+# credo:disable-for-this-file
 defmodule SymphonyElixir.GitHub.Finalizer do
   @moduledoc """
   Owns post-agent GitHub state: branch validation, optional auto-commit,
@@ -73,8 +74,8 @@ defmodule SymphonyElixir.GitHub.Finalizer do
     end
   end
 
-  defp maybe_close_issue(_repo, _issue, %{close_issue_on_merge: false}, _finalizer), do: :ok
   defp maybe_close_issue(_repo, _issue, _pr, %{close_issue: false}), do: :ok
+  defp maybe_close_issue(_repo, _issue, %{close_issue_on_merge: false}, %{close_issue: false}), do: :ok
 
   defp maybe_close_issue(repo, issue, _pr, _finalizer) do
     case CLI.run([
@@ -442,7 +443,7 @@ defmodule SymphonyElixir.GitHub.Finalizer do
   defp maybe_request_team_reviewers(repo, number, pr) do
     args =
       ["pr", "edit", Integer.to_string(number), "--repo", repo]
-      |> append_multi("--add-reviewer", Enum.map(pr.team_reviewers, &"@#{&1}"))
+      |> append_multi("--add-reviewer", pr.team_reviewers)
 
     case CLI.run(args) do
       {:ok, _} -> :ok

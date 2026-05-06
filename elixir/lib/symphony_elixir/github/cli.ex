@@ -5,12 +5,19 @@ defmodule SymphonyElixir.GitHub.CLI do
   Every operation goes through `System.cmd/3` (or a configurable runner for
   tests). Repository identifiers are validated by `SymphonyElixir.RepoId`
   before they are spliced into argv. We never use shell strings.
+
+  Calls run inside a `Task` with a hard timeout so a hung or slow `gh`
+  invocation cannot block the calling GenServer (orchestrator) or
+  Phoenix request worker. The timeout is configurable via
+  `:gh_cli_timeout_ms` and defaults to 15s.
   """
 
   alias SymphonyElixir.{Redaction, StructuredLogger}
   alias SymphonyElixir.RepoId
 
   require Logger
+
+  @default_timeout_ms 15_000
 
   @type runner :: ([String.t()], keyword() -> {String.t(), non_neg_integer()})
 
@@ -24,6 +31,12 @@ defmodule SymphonyElixir.GitHub.CLI do
   @spec runner() :: runner()
   def runner do
     Application.get_env(:symphony_elixir, :gh_runner, default_runner())
+  end
+
+  @doc false
+  @spec timeout_ms() :: pos_integer()
+  def timeout_ms do
+    Application.get_env(:symphony_elixir, :gh_cli_timeout_ms, @default_timeout_ms)
   end
 
   @doc """
@@ -59,17 +72,28 @@ defmodule SymphonyElixir.GitHub.CLI do
     Enum.each(args, &validate_arg!/1)
 
     started_at = System.monotonic_time(:millisecond)
-    {output, status} = runner().(args, stderr_to_stdout: true)
+    result = run_with_timeout(args, timeout_ms())
     duration_ms = System.monotonic_time(:millisecond) - started_at
-    log_github_command(args, status, output, duration_ms)
 
-    case status do
-      0 ->
+    case result do
+      {:ok, {output, 0}} ->
+        log_github_command(args, 0, output, duration_ms)
         {:ok, output}
 
-      _ ->
+      {:ok, {output, status}} ->
+        log_github_command(args, status, output, duration_ms)
         Logger.warning("gh #{summary(args)} exited #{status}: #{Redaction.redact(output)}")
         {:error, {:gh_exit, status, Redaction.redact(output)}}
+
+      {:error, :timeout} ->
+        log_github_command(args, 124, "gh timed out after #{timeout_ms()}ms", duration_ms)
+        Logger.warning("gh #{summary(args)} timed out after #{timeout_ms()}ms")
+        {:error, :gh_timeout}
+
+      {:error, {:runner_exit, reason}} ->
+        log_github_command(args, 125, "gh runner crashed: #{inspect(reason)}", duration_ms)
+        Logger.warning("gh #{summary(args)} runner crashed: #{inspect(reason)}")
+        {:error, {:gh_runner_exit, reason}}
     end
   end
 
@@ -82,11 +106,56 @@ defmodule SymphonyElixir.GitHub.CLI do
     Enum.each(args, &validate_arg!/1)
 
     started_at = System.monotonic_time(:millisecond)
-    {output, status} = runner().(args, stderr_to_stdout: true)
+    result = run_with_timeout(args, timeout_ms())
     duration_ms = System.monotonic_time(:millisecond) - started_at
-    log_github_command(args, status, output, duration_ms)
 
-    {status, Redaction.redact(output)}
+    case result do
+      {:ok, {output, status}} ->
+        log_github_command(args, status, output, duration_ms)
+        {status, Redaction.redact(output)}
+
+      {:error, :timeout} ->
+        log_github_command(args, 124, "gh timed out after #{timeout_ms()}ms", duration_ms)
+        Logger.warning("gh #{summary(args)} timed out after #{timeout_ms()}ms")
+        # Mirror a non-zero exit so callers can branch on it.
+        {124, Redaction.redact("gh timed out after #{timeout_ms()}ms")}
+
+      {:error, {:runner_exit, reason}} ->
+        log_github_command(args, 125, "gh runner crashed: #{inspect(reason)}", duration_ms)
+        Logger.warning("gh #{summary(args)} runner crashed: #{inspect(reason)}")
+        # Distinguish from timeout via a different "exit code" so
+        # callers that branch on it can tell apart a fast crash from
+        # a deadline miss.
+        {125, Redaction.redact("gh runner crashed: #{inspect(reason)}")}
+    end
+  end
+
+  # Run `gh` inside a Task with a hard timeout. Task.shutdown unlinks
+  # before killing, so a brutal_kill on timeout cannot crash the caller
+  # GenServer (typical case: orchestrator handle_call). Synchronous
+  # `System.cmd` provides no native timeout, hence this wrapper.
+  defp run_with_timeout(args, deadline_ms) do
+    runner_fun = runner()
+    task = Task.async(fn -> runner_fun.(args, stderr_to_stdout: true) end)
+
+    case Task.yield(task, deadline_ms) do
+      # The runner returned cleanly inside the deadline.
+      {:ok, result} ->
+        {:ok, result}
+
+      # The runner crashed BEFORE the deadline. Don't misreport this
+      # as a timeout — bubble the exit reason so callers can tell a
+      # genuine timeout (no result) apart from a fast crash.
+      {:exit, reason} ->
+        {:error, {:runner_exit, reason}}
+
+      # No result yet -> past the deadline. Brutal-kill the task and
+      # report the timeout even if the runner completes while shutdown
+      # races, so callers get deterministic timeout semantics.
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, :timeout}
+    end
   end
 
   @doc """

@@ -408,7 +408,7 @@ async function metricsRows(): Promise<string[]> {
     const attempt = Number(payload?.attempt ?? payload?.attempt_number ?? 1);
     const failureClass = String(payload?.failure_class ?? "");
 
-    current.runs += event.event_type === "agent_run" || event.event_type === "agent_run_completed" ? 1 : 0;
+    current.runs += event.event_type === "agent_run_started" ? 1 : 0;
     current.failures += exitCode !== undefined && exitCode !== 0 ? 1 : 0;
     current.durationMs += Number.isFinite(duration) ? duration : 0;
     current.retries += Number.isFinite(attempt) && attempt > 1 ? 1 : 0;
@@ -516,6 +516,8 @@ function getPath(root: Json, path: string): unknown {
 
 function setPath(root: Json, path: string, value: unknown) {
   const parts = path.split(".");
+  const leaf = parts.at(-1);
+  if (!leaf) return;
   let current: Json = root;
 
   for (const part of parts.slice(0, -1)) {
@@ -525,11 +527,13 @@ function setPath(root: Json, path: string, value: unknown) {
     current = current[part] as Json;
   }
 
-  current[parts[parts.length - 1]] = value;
+  current[leaf] = value;
 }
 
 function deletePath(root: Json, path: string) {
   const parts = path.split(".");
+  const leaf = parts.at(-1);
+  if (!leaf) return;
   let current: Json = root;
 
   for (const part of parts.slice(0, -1)) {
@@ -537,7 +541,7 @@ function deletePath(root: Json, path: string) {
     current = current[part] as Json;
   }
 
-  delete current[parts[parts.length - 1]];
+  delete current[leaf];
 }
 
 function coerceValue(value: string): unknown {

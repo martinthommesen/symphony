@@ -43,18 +43,23 @@ defmodule SymphonyElixir.StructuredLogger do
 
   @spec log_named(String.t(), map()) :: :ok
   def log_named(name, event) when is_binary(name) and is_map(event) do
-    directory = configured_directory()
-    path = Path.join(directory, "#{name}.ndjson")
-    event = normalize_named_event(event)
-
-    with :ok <- File.mkdir_p(directory),
-         {:ok, encoded} <- Jason.encode(event),
-         :ok <- File.write(path, encoded <> "\n", [:append]) do
-      :ok
-    else
-      {:error, reason} ->
-        Logger.warning("StructuredLogger named write failed for #{path}: #{inspect(reason)}")
+    case named_logging_config() do
+      {_directory, false} ->
         :ok
+
+      {directory, true} ->
+        path = Path.join(directory, "#{name}.ndjson")
+
+        with {:ok, event} <- normalize_named_event(event),
+             :ok <- File.mkdir_p(directory),
+             {:ok, encoded} <- Jason.encode(event),
+             :ok <- File.write(path, encoded <> "\n", [:append]) do
+          :ok
+        else
+          {:error, reason} ->
+            Logger.warning("StructuredLogger named write failed for #{path}: #{inspect(reason)}")
+            :ok
+        end
     end
   end
 
@@ -111,14 +116,7 @@ defmodule SymphonyElixir.StructuredLogger do
   def handle_cast({:log, event}, state) do
     if state.enabled and level_allowed?(event[:level], state.level) do
       state = ensure_file_open(state)
-
-      line =
-        event
-        |> Map.put(:"@timestamp", timestamp())
-        |> Map.put(:service, @service)
-        |> Jason.encode!()
-
-      :ok = IO.binwrite(state.io_device, [line, "\n"])
+      write_event(state.io_device, event)
       {:noreply, state}
     else
       {:noreply, state}
@@ -181,6 +179,16 @@ defmodule SymphonyElixir.StructuredLogger do
     end
   rescue
     _ -> Path.expand(@default_relative_dir)
+  end
+
+  defp named_logging_config do
+    settings = Config.settings!()
+    logging = settings.logging
+    directory = configured_directory()
+
+    {directory, logging.ndjson_enabled}
+  rescue
+    _ -> {Path.expand(@default_relative_dir), true}
   end
 
   defp parse_level(nil), do: :info
@@ -259,6 +267,21 @@ defmodule SymphonyElixir.StructuredLogger do
     DateTime.utc_now() |> DateTime.to_iso8601()
   end
 
+  defp write_event(nil, _event), do: :ok
+
+  defp write_event(io_device, event) do
+    with {:ok, event} <- redact_event(event),
+         event <- event |> Map.put(:"@timestamp", timestamp()) |> Map.put(:service, @service),
+         {:ok, line} <- Jason.encode(event),
+         :ok <- IO.binwrite(io_device, [line, "\n"]) do
+      :ok
+    else
+      {:error, reason} ->
+        Logger.warning("StructuredLogger dropped event: #{inspect(reason)}")
+        :ok
+    end
+  end
+
   defp build_event(level, message, opts) when is_list(opts) do
     opts
     |> Enum.into(%{})
@@ -267,21 +290,23 @@ defmodule SymphonyElixir.StructuredLogger do
   end
 
   defp normalize_named_event(event) do
-    event
-    |> redact_event()
-    |> Map.put_new(:timestamp, DateTime.utc_now() |> DateTime.to_iso8601())
-    |> Map.put_new(:severity, "info")
-    |> Map.put_new(:event_type, "event")
-    |> Map.put_new(:message, "")
-    |> Map.put_new(:payload, %{})
+    with {:ok, event} <- redact_event(event) do
+      {:ok,
+       event
+       |> Map.put_new(:timestamp, DateTime.utc_now() |> DateTime.to_iso8601())
+       |> Map.put_new(:severity, "info")
+       |> Map.put_new(:event_type, "event")
+       |> Map.put_new(:message, "")
+       |> Map.put_new(:payload, %{})}
+    end
   end
 
   defp redact_event(event) when is_map(event) do
-    event
-    |> Jason.encode!()
-    |> Redaction.redact()
-    |> Jason.decode!()
-    |> atomize_known_keys()
+    with {:ok, encoded} <- Jason.encode(event),
+         redacted <- Redaction.redact(encoded),
+         {:ok, decoded} <- Jason.decode(redacted) do
+      {:ok, atomize_known_keys(decoded)}
+    end
   end
 
   defp atomize_known_keys(event) do
