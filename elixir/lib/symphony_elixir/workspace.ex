@@ -1,10 +1,10 @@
 defmodule SymphonyElixir.Workspace do
   @moduledoc """
-  Creates isolated per-issue workspaces for parallel Codex agents.
+  Creates isolated per-issue workspaces for parallel agent runs.
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{Config, Git, PathSafety, SSH}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
@@ -20,7 +20,7 @@ defmodule SymphonyElixir.Workspace do
 
       with {:ok, workspace} <- workspace_path_for_issue(safe_id, worker_host),
            :ok <- validate_workspace_path(workspace, worker_host),
-           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host),
+           {:ok, workspace, created?} <- ensure_workspace(workspace, worker_host, issue_context),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?, worker_host) do
         {:ok, workspace}
       end
@@ -31,21 +31,17 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp ensure_workspace(workspace, nil) do
-    cond do
-      File.dir?(workspace) ->
-        {:ok, workspace, false}
+  defp ensure_workspace(workspace, nil, issue_context) do
+    workspace_config = Config.settings!().workspace
 
-      File.exists?(workspace) ->
-        File.rm_rf!(workspace)
-        create_workspace(workspace)
-
-      true ->
-        create_workspace(workspace)
+    if workspace_config.git_worktree_enabled do
+      ensure_git_worktree(workspace, issue_context, workspace_config)
+    else
+      ensure_plain_workspace(workspace)
     end
   end
 
-  defp ensure_workspace(workspace, worker_host) when is_binary(worker_host) do
+  defp ensure_workspace(workspace, worker_host, _issue_context) when is_binary(worker_host) do
     script =
       [
         "set -eu",
@@ -78,10 +74,171 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp ensure_plain_workspace(workspace) do
+    cond do
+      File.dir?(workspace) ->
+        {:ok, workspace, false}
+
+      File.exists?(workspace) ->
+        File.rm_rf!(workspace)
+        create_workspace(workspace)
+
+      true ->
+        create_workspace(workspace)
+    end
+  end
+
   defp create_workspace(workspace) do
     File.rm_rf!(workspace)
     File.mkdir_p!(workspace)
     {:ok, workspace, true}
+  end
+
+  defp ensure_git_worktree(workspace, issue_context, workspace_config) do
+    with {:ok, repo_root} <- git_repo_root(),
+         :ok <- maybe_fetch(repo_root, workspace_config),
+         :ok <- maybe_prepare_existing_worktree(workspace, workspace_config),
+         {:ok, created?} <- maybe_add_worktree(repo_root, workspace, issue_context, workspace_config),
+         :ok <- maybe_handle_dirty_worktree(workspace, workspace_config),
+         :ok <- maybe_rebase_worktree(workspace, workspace_config),
+         :ok <- maybe_enforce_workspace_size(workspace, workspace_config) do
+      {:ok, workspace, created?}
+    end
+  end
+
+  defp git_repo_root do
+    case Git.cmd(["rev-parse", "--show-toplevel"], stderr_to_stdout: true) do
+      {output, 0} -> {:ok, String.trim(output)}
+      {output, status} -> {:error, {:git_repo_root_failed, status, String.trim(output)}}
+    end
+  end
+
+  defp maybe_fetch(_repo_root, %{fetch_before_run: false}), do: :ok
+
+  defp maybe_fetch(repo_root, _workspace_config) do
+    case Git.cmd(["-C", repo_root, "fetch", "--all", "--prune"], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:git_fetch_failed, status, output}}
+    end
+  end
+
+  defp maybe_prepare_existing_worktree(workspace, %{worktree_strategy: "fresh_per_attempt"}) do
+    if File.exists?(workspace), do: remove_existing_worktree(workspace), else: :ok
+  end
+
+  defp maybe_prepare_existing_worktree(_workspace, _workspace_config), do: :ok
+
+  defp maybe_add_worktree(repo_root, workspace, issue_context, workspace_config) do
+    if File.dir?(Path.join(workspace, ".git")) or File.exists?(Path.join(workspace, ".git")) do
+      {:ok, false}
+    else
+      branch = worktree_branch(issue_context, workspace_config)
+      File.mkdir_p!(Path.dirname(workspace))
+
+      args =
+        if local_branch_exists?(repo_root, branch) do
+          ["-C", repo_root, "worktree", "add", workspace, branch]
+        else
+          ["-C", repo_root, "worktree", "add", "-b", branch, workspace, workspace_config.base_branch]
+        end
+
+      case Git.cmd(args, stderr_to_stdout: true) do
+        {_output, 0} -> {:ok, true}
+        {output, status} -> {:error, {:git_worktree_add_failed, status, output}}
+      end
+    end
+  end
+
+  defp local_branch_exists?(repo_root, branch) do
+    case Git.cmd(["-C", repo_root, "show-ref", "--verify", "--quiet", "refs/heads/#{branch}"], stderr_to_stdout: true) do
+      {_output, 0} -> true
+      _ -> false
+    end
+  end
+
+  defp worktree_branch(issue_context, workspace_config) do
+    issue_number =
+      case Regex.run(~r/(\d+)/, issue_context.issue_identifier || "") do
+        [_, number] -> number
+        _ -> safe_identifier(issue_context.issue_identifier)
+      end
+
+    workspace_config.branch_name_template
+    |> String.replace("{{issue_number}}", issue_number)
+    |> String.replace("{{identifier}}", safe_identifier(issue_context.issue_identifier))
+    |> ensure_branch_prefix(workspace_config.branch_prefix)
+  end
+
+  defp ensure_branch_prefix(branch, prefix) when is_binary(prefix) and prefix != "" do
+    if String.starts_with?(branch, prefix), do: branch, else: prefix <> branch
+  end
+
+  defp ensure_branch_prefix(branch, _prefix), do: branch
+
+  defp maybe_handle_dirty_worktree(workspace, workspace_config) do
+    case Git.cmd(["-C", workspace, "status", "--porcelain"], stderr_to_stdout: true) do
+      {"", 0} ->
+        :ok
+
+      {_output, 0} ->
+        handle_dirty_workspace(workspace, workspace_config.reset_dirty_workspace_policy)
+
+      {output, status} ->
+        {:error, {:git_status_failed, status, output}}
+    end
+  end
+
+  defp handle_dirty_workspace(_workspace, "fail"), do: {:error, :dirty_worktree}
+
+  defp handle_dirty_workspace(workspace, "stash") do
+    case Git.cmd(["-C", workspace, "stash", "push", "--include-untracked", "-m", "symphony-auto-stash"], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:git_stash_failed, status, output}}
+    end
+  end
+
+  defp handle_dirty_workspace(workspace, "reset") do
+    with {_output, 0} <- Git.cmd(["-C", workspace, "reset", "--hard"], stderr_to_stdout: true),
+         {_output, 0} <- Git.cmd(["-C", workspace, "clean", "-fd"], stderr_to_stdout: true) do
+      :ok
+    else
+      {output, status} -> {:error, {:git_reset_failed, status, output}}
+    end
+  end
+
+  defp maybe_rebase_worktree(_workspace, %{rebase_before_run: false}), do: :ok
+
+  defp maybe_rebase_worktree(workspace, workspace_config) do
+    case Git.cmd(["-C", workspace, "rebase", workspace_config.base_branch], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      {output, status} -> {:error, {:git_rebase_failed, status, output}}
+    end
+  end
+
+  defp maybe_enforce_workspace_size(_workspace, %{max_workspace_size_bytes: nil}), do: :ok
+
+  defp maybe_enforce_workspace_size(workspace, %{max_workspace_size_bytes: max_size}) do
+    case System.cmd("du", ["-sk", workspace], stderr_to_stdout: true) do
+      {output, 0} ->
+        [kb | _] = String.split(output)
+        size = String.to_integer(kb) * 1024
+
+        if size <= max_size do
+          :ok
+        else
+          {:error, {:workspace_too_large, size, max_size}}
+        end
+
+      {output, status} ->
+        {:error, {:workspace_size_failed, status, output}}
+    end
+  end
+
+  defp remove_existing_worktree(workspace) do
+    case Git.cmd(["worktree", "remove", "--force", workspace], stderr_to_stdout: true) do
+      {_output, 0} -> :ok
+      _ -> File.rm_rf!(workspace)
+    end
   end
 
   @spec remove(Path.t()) :: {:ok, [String.t()]} | {:error, term(), String.t()}

@@ -1,16 +1,41 @@
 defmodule SymphonyElixir.Workflow do
   @moduledoc """
-  Loads workflow configuration and prompt from WORKFLOW.md.
+  Loads Symphony configuration and the repo-owned workflow prompt.
+
+  Runtime configuration is read from `.symphony/config.yml` when present.
+  `WORKFLOW.md` remains the prompt template source and can still carry
+  front matter for existing deployments and tests.
   """
 
   alias SymphonyElixir.WorkflowStore
 
   @workflow_file_name "WORKFLOW.md"
+  @config_file_name "config.yml"
 
   @spec workflow_file_path() :: Path.t()
   def workflow_file_path do
     Application.get_env(:symphony_elixir, :workflow_file_path) ||
       Path.join(File.cwd!(), @workflow_file_name)
+  end
+
+  @spec config_file_path() :: Path.t()
+  def config_file_path do
+    Application.get_env(:symphony_elixir, :config_file_path) ||
+      default_config_file_path(workflow_file_path())
+  end
+
+  @spec set_config_file_path(Path.t()) :: :ok
+  def set_config_file_path(path) when is_binary(path) do
+    Application.put_env(:symphony_elixir, :config_file_path, path)
+    maybe_reload_store()
+    :ok
+  end
+
+  @spec clear_config_file_path() :: :ok
+  def clear_config_file_path do
+    Application.delete_env(:symphony_elixir, :config_file_path)
+    maybe_reload_store()
+    :ok
   end
 
   @spec set_workflow_file_path(Path.t()) :: :ok
@@ -53,23 +78,24 @@ defmodule SymphonyElixir.Workflow do
   def load(path) when is_binary(path) do
     case File.read(path) do
       {:ok, content} ->
-        parse(content)
+        parse(content, config_file_path_for_workflow(path))
 
       {:error, reason} ->
         {:error, {:missing_workflow_file, path, reason}}
     end
   end
 
-  defp parse(content) do
+  defp parse(content, config_path) do
     {front_matter_lines, prompt_lines} = split_front_matter(content)
 
     case front_matter_yaml_to_map(front_matter_lines) do
       {:ok, front_matter} ->
         prompt = Enum.join(prompt_lines, "\n") |> String.trim()
+        config = load_external_config(config_path, front_matter)
 
         {:ok,
          %{
-           config: front_matter,
+           config: config,
            prompt: prompt,
            prompt_template: prompt
          }}
@@ -79,6 +105,19 @@ defmodule SymphonyElixir.Workflow do
 
       {:error, reason} ->
         {:error, {:workflow_parse_error, reason}}
+    end
+  end
+
+  defp load_external_config(config_path, front_matter) do
+    case File.read(config_path) do
+      {:ok, yaml} ->
+        case YamlElixir.read_from_string(yaml) do
+          {:ok, decoded} when is_map(decoded) -> decoded
+          _ -> front_matter
+        end
+
+      {:error, _reason} ->
+        front_matter
     end
   end
 
@@ -111,6 +150,17 @@ defmodule SymphonyElixir.Workflow do
         {:error, reason} -> {:error, reason}
       end
     end
+  end
+
+  defp config_file_path_for_workflow(workflow_path) do
+    Application.get_env(:symphony_elixir, :config_file_path) ||
+      default_config_file_path(workflow_path)
+  end
+
+  defp default_config_file_path(workflow_path) do
+    workflow_path
+    |> Path.dirname()
+    |> Path.join(@config_file_name)
   end
 
   defp maybe_reload_store do

@@ -5,8 +5,6 @@ defmodule SymphonyElixir.Config.Schema do
 
   import Ecto.Changeset
 
-  alias SymphonyElixir.PathSafety
-
   @primary_key false
 
   @type t :: %__MODULE__{}
@@ -124,12 +122,49 @@ defmodule SymphonyElixir.Config.Schema do
     @primary_key false
     embedded_schema do
       field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
+      field(:worktree_strategy, :string, default: "reuse")
+      field(:git_worktree_enabled, :boolean, default: false)
+      field(:branch_prefix, :string, default: "symphony/")
+      field(:branch_name_template, :string, default: "symphony/issue-{{issue_number}}")
+      field(:base_branch, :string, default: "main")
+      field(:fetch_before_run, :boolean, default: false)
+      field(:rebase_before_run, :boolean, default: false)
+      field(:reset_dirty_workspace_policy, :string, default: "fail")
+      field(:cleanup_policy, :string, default: "never")
+      field(:retention_days, :integer, default: 14)
+      field(:max_workspace_size_bytes, :integer)
+      field(:prune_stale_workspaces, :boolean, default: false)
+      field(:isolate_dependency_caches, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
     def changeset(schema, attrs) do
       schema
-      |> cast(attrs, [:root], empty_values: [])
+      |> cast(
+        attrs,
+        [
+          :root,
+          :worktree_strategy,
+          :git_worktree_enabled,
+          :branch_prefix,
+          :branch_name_template,
+          :base_branch,
+          :fetch_before_run,
+          :rebase_before_run,
+          :reset_dirty_workspace_policy,
+          :cleanup_policy,
+          :retention_days,
+          :max_workspace_size_bytes,
+          :prune_stale_workspaces,
+          :isolate_dependency_caches
+        ],
+        empty_values: []
+      )
+      |> validate_inclusion(:worktree_strategy, ["reuse", "fresh_per_attempt", "reset_before_retry", "preserve_on_failure"])
+      |> validate_inclusion(:reset_dirty_workspace_policy, ["fail", "stash", "reset"])
+      |> validate_inclusion(:cleanup_policy, ["never", "on_success", "on_done_label", "after_retention"])
+      |> validate_number(:retention_days, greater_than: 0)
+      |> validate_number(:max_workspace_size_bytes, greater_than: 0)
     end
   end
 
@@ -165,6 +200,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:max_turns, :integer, default: 20)
       field(:max_retry_backoff_ms, :integer, default: 300_000)
       field(:max_concurrent_agents_by_state, :map, default: %{})
+      field(:stall_timeout_ms, :integer, default: 300_000)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -172,41 +208,38 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state],
+        [:max_concurrent_agents, :max_turns, :max_retry_backoff_ms, :max_concurrent_agents_by_state, :stall_timeout_ms],
         empty_values: []
       )
       |> validate_number(:max_concurrent_agents, greater_than: 0)
       |> validate_number(:max_turns, greater_than: 0)
       |> validate_number(:max_retry_backoff_ms, greater_than: 0)
+      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
       |> update_change(:max_concurrent_agents_by_state, &Schema.normalize_state_limits/1)
       |> Schema.validate_state_limits(:max_concurrent_agents_by_state)
     end
   end
 
-  defmodule Codex do
+  defmodule Acpx do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
 
     @primary_key false
     embedded_schema do
-      field(:command, :string, default: "codex app-server")
-
-      field(:approval_policy, StringOrMap,
-        default: %{
-          "reject" => %{
-            "sandbox_approval" => true,
-            "rules" => true,
-            "mcp_elicitations" => true
-          }
-        }
-      )
-
-      field(:thread_sandbox, :string, default: "workspace-write")
-      field(:turn_sandbox_policy, :map)
-      field(:turn_timeout_ms, :integer, default: 3_600_000)
-      field(:read_timeout_ms, :integer, default: 5_000)
-      field(:stall_timeout_ms, :integer, default: 300_000)
+      field(:executable, :string, default: "acpx")
+      field(:pinned_version, :string)
+      field(:install_location, :string)
+      field(:config_location, :string)
+      field(:default_output_format, :string, default: "json")
+      field(:json_strict, :boolean, default: true)
+      field(:suppress_reads, :boolean, default: true)
+      field(:approve_mode, :string, default: "approve-all")
+      field(:non_interactive_permission_behavior, :string, default: "deny")
+      field(:auth_policy, :string, default: "auto")
+      field(:extra_argv, {:array, :string}, default: [])
+      field(:custom_agent_definitions, :map, default: %{})
+      field(:session_naming_template, :string, default: "symphony-{{issue_number}}")
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -215,43 +248,127 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [
-          :command,
-          :approval_policy,
-          :thread_sandbox,
-          :turn_sandbox_policy,
-          :turn_timeout_ms,
-          :read_timeout_ms,
-          :stall_timeout_ms
+          :executable,
+          :pinned_version,
+          :install_location,
+          :config_location,
+          :default_output_format,
+          :json_strict,
+          :suppress_reads,
+          :approve_mode,
+          :non_interactive_permission_behavior,
+          :auth_policy,
+          :extra_argv,
+          :custom_agent_definitions,
+          :session_naming_template
         ],
         empty_values: []
       )
-      |> validate_required([:command])
-      |> validate_number(:turn_timeout_ms, greater_than: 0)
-      |> validate_number(:read_timeout_ms, greater_than: 0)
-      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_required([:executable])
+      |> validate_inclusion(:default_output_format, ["json", "text"])
+      |> validate_inclusion(:approve_mode, ["approve-all", "approve-reads", "ask", "deny"])
+      |> validate_inclusion(:non_interactive_permission_behavior, ["deny", "approve", "ignore"])
     end
   end
 
-  defmodule Copilot do
+  defmodule Agents do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    defmodule Routing do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+      embedded_schema do
+        field(:required_dispatch_label, :string, default: "symphony")
+        field(:label_prefix, :string, default: "symphony/agent/")
+        field(:default_agent, :string, default: "codex")
+        field(:multi_agent_policy, :string, default: "reject")
+        field(:aliases, :map, default: %{})
+        field(:blocked_labels, {:array, :string}, default: [])
+        field(:running_label, :string, default: "")
+        field(:review_label, :string, default: "")
+        field(:failed_label, :string, default: "")
+        field(:retry_failed, :boolean, default: false)
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        attrs = normalize_legacy_routing_keys(attrs)
+
+        schema
+        |> cast(
+          attrs,
+          [
+            :required_dispatch_label,
+            :label_prefix,
+            :default_agent,
+            :multi_agent_policy,
+            :aliases,
+            :blocked_labels,
+            :running_label,
+            :review_label,
+            :failed_label,
+            :retry_failed
+          ],
+          empty_values: []
+        )
+        |> validate_inclusion(:multi_agent_policy, ["reject", "fanout_draft_prs", "race_first_success"])
+      end
+
+      defp normalize_legacy_routing_keys(attrs) when is_map(attrs) do
+        attrs
+        |> maybe_copy("required_label_prefix", "label_prefix")
+        |> maybe_copy("label_aliases", "aliases")
+      end
+
+      defp normalize_legacy_routing_keys(attrs), do: attrs
+
+      defp maybe_copy(attrs, from, to) do
+        if Map.has_key?(attrs, from) and not Map.has_key?(attrs, to) do
+          Map.put(attrs, to, Map.fetch!(attrs, from))
+        else
+          attrs
+        end
+      end
+    end
+
+    @primary_key false
+    embedded_schema do
+      embeds_one(:routing, Routing, on_replace: :update, defaults_to_struct: true)
+      field(:registry, :map, default: %{})
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:registry], empty_values: [])
+      |> cast_embed(:routing, with: &Routing.changeset/2)
+    end
+  end
+
+  defmodule Commit do
     @moduledoc false
     use Ecto.Schema
     import Ecto.Changeset
 
     @primary_key false
     embedded_schema do
-      field(:command, :string, default: "copilot")
-      field(:mode, :string, default: "autopilot")
-      field(:permission_mode, :string, default: "yolo")
-      field(:no_ask_user, :boolean, default: true)
-      field(:output_format, :string, default: "json")
-      field(:max_autopilot_continues, :integer, default: 10)
-      field(:turn_timeout_ms, :integer, default: 3_600_000)
-      field(:read_timeout_ms, :integer, default: 5_000)
-      field(:stall_timeout_ms, :integer, default: 300_000)
-
-      field(:deny_tools, {:array, :string},
-        default: ["shell(git push)", "shell(gh pr)", "shell(gh issue)"]
-      )
+      field(:enabled, :boolean, default: true)
+      field(:strategy, :string, default: "agent_commits")
+      field(:message_template, :string)
+      field(:author_name, :string)
+      field(:author_email, :string)
+      field(:sign_commits, :boolean, default: false)
+      field(:allow_empty, :boolean, default: false)
+      field(:include_untracked, :boolean, default: false)
+      field(:max_changed_files, :integer)
+      field(:max_diff_size, :integer)
+      field(:run_pre_commit_hooks, :boolean, default: false)
+      field(:commit_only_after_validation, :boolean, default: false)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -260,27 +377,207 @@ defmodule SymphonyElixir.Config.Schema do
       |> cast(
         attrs,
         [
-          :command,
-          :mode,
-          :permission_mode,
-          :no_ask_user,
-          :output_format,
-          :max_autopilot_continues,
-          :turn_timeout_ms,
-          :read_timeout_ms,
-          :stall_timeout_ms,
-          :deny_tools
+          :enabled,
+          :strategy,
+          :message_template,
+          :author_name,
+          :author_email,
+          :sign_commits,
+          :allow_empty,
+          :include_untracked,
+          :max_changed_files,
+          :max_diff_size,
+          :run_pre_commit_hooks,
+          :commit_only_after_validation
         ],
         empty_values: []
       )
-      |> validate_required([:command])
-      |> validate_inclusion(:mode, ["autopilot", "acp"])
-      |> validate_inclusion(:permission_mode, ["yolo", "ask", "restricted"])
-      |> validate_inclusion(:output_format, ["json", "text"])
-      |> validate_number(:max_autopilot_continues, greater_than: 0)
-      |> validate_number(:turn_timeout_ms, greater_than: 0)
-      |> validate_number(:read_timeout_ms, greater_than: 0)
-      |> validate_number(:stall_timeout_ms, greater_than_or_equal_to: 0)
+      |> validate_inclusion(:strategy, ["agent_commits", "symphony_commits_all", "symphony_commits_selected", "no_commit"])
+    end
+  end
+
+  defmodule PR do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: true)
+      field(:draft, :boolean, default: false)
+      field(:update_existing, :boolean, default: false)
+      field(:title_template, :string)
+      field(:body_template, :string)
+      field(:include_issue_link, :boolean, default: true)
+      field(:reviewers, {:array, :string}, default: [])
+      field(:team_reviewers, {:array, :string}, default: [])
+      field(:assignees, {:array, :string}, default: [])
+      field(:labels, {:array, :string}, default: [])
+      field(:milestone, :string)
+      field(:request_review, :boolean, default: false)
+      field(:auto_merge, :boolean, default: false)
+      field(:close_issue_on_merge, :boolean, default: false)
+      field(:comment_on_issue, :boolean, default: true)
+      field(:include_logs_summary, :boolean, default: false)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enabled,
+          :draft,
+          :update_existing,
+          :title_template,
+          :body_template,
+          :include_issue_link,
+          :reviewers,
+          :team_reviewers,
+          :assignees,
+          :labels,
+          :milestone,
+          :request_review,
+          :auto_merge,
+          :close_issue_on_merge,
+          :comment_on_issue,
+          :include_logs_summary
+        ],
+        empty_values: []
+      )
+    end
+  end
+
+  defmodule Validation do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:commands, {:array, :string}, default: [])
+      field(:test_command, :string)
+      field(:typecheck_command, :string)
+      field(:lint_command, :string)
+      field(:max_retries, :integer, default: 0)
+      field(:include_logs_in_corrective_prompt, :boolean, default: false)
+      field(:fail_if_no_diff, :boolean, default: false)
+      field(:fail_if_no_commit, :boolean, default: false)
+      field(:fail_if_pr_cannot_be_created, :boolean, default: false)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :commands,
+          :test_command,
+          :typecheck_command,
+          :lint_command,
+          :max_retries,
+          :include_logs_in_corrective_prompt,
+          :fail_if_no_diff,
+          :fail_if_no_commit,
+          :fail_if_pr_cannot_be_created
+        ],
+        empty_values: []
+      )
+      |> validate_number(:max_retries, greater_than_or_equal_to: 0)
+    end
+  end
+
+  defmodule SelfCorrection do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: true)
+      field(:max_correction_attempts, :integer, default: 2)
+      field(:correction_prompt_template, :string)
+      field(:retry_backoff_ms, :integer, default: 10_000)
+      field(:classify_failures, :boolean, default: true)
+      field(:retry_on_stall, :boolean, default: true)
+      field(:retry_on_acpx_crash, :boolean, default: true)
+      field(:retry_on_validation_failure, :boolean, default: true)
+      field(:retry_on_no_changes, :boolean, default: true)
+      field(:retry_on_pr_creation_failure, :boolean, default: true)
+      field(:retry_on_merge_conflict, :boolean, default: true)
+      field(:retry_on_dependency_missing, :boolean, default: true)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :enabled,
+          :max_correction_attempts,
+          :correction_prompt_template,
+          :retry_backoff_ms,
+          :classify_failures,
+          :retry_on_stall,
+          :retry_on_acpx_crash,
+          :retry_on_validation_failure,
+          :retry_on_no_changes,
+          :retry_on_pr_creation_failure,
+          :retry_on_merge_conflict,
+          :retry_on_dependency_missing
+        ],
+        empty_values: []
+      )
+      |> validate_number(:max_correction_attempts, greater_than_or_equal_to: 0)
+      |> validate_number(:retry_backoff_ms, greater_than: 0)
+    end
+  end
+
+  defmodule Logging do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:level, :string, default: "info")
+      field(:directory, :string)
+      field(:ndjson_enabled, :boolean, default: true)
+      field(:text_logs_enabled, :boolean, default: false)
+      field(:event_retention_days, :integer, default: 30)
+      field(:redact_secrets, :boolean, default: true)
+      field(:raw_acpx_event_capture, :boolean, default: false)
+      field(:raw_stdout_stderr_capture, :boolean, default: false)
+      field(:max_log_size_bytes, :integer)
+      field(:compress_old_logs, :boolean, default: false)
+      field(:tui_audit_log, :boolean, default: false)
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [
+          :level,
+          :directory,
+          :ndjson_enabled,
+          :text_logs_enabled,
+          :event_retention_days,
+          :redact_secrets,
+          :raw_acpx_event_capture,
+          :raw_stdout_stderr_capture,
+          :max_log_size_bytes,
+          :compress_old_logs,
+          :tui_audit_log
+        ],
+        empty_values: []
+      )
+      |> validate_inclusion(:level, ["debug", "info", "warning", "error"])
+      |> validate_number(:event_retention_days, greater_than: 0)
     end
   end
 
@@ -377,8 +674,13 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:workspace, Workspace, on_replace: :update, defaults_to_struct: true)
     embeds_one(:worker, Worker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent, Agent, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:codex, Codex, on_replace: :update, defaults_to_struct: true)
-    embeds_one(:copilot, Copilot, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:acpx, Acpx, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:agents, Agents, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:commit, Commit, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:pr, PR, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:validation, Validation, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:self_correction, SelfCorrection, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:logging, Logging, on_replace: :update, defaults_to_struct: true)
     embeds_one(:finalizer, Finalizer, on_replace: :update, defaults_to_struct: true)
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
@@ -398,34 +700,6 @@ defmodule SymphonyElixir.Config.Schema do
 
       {:error, changeset} ->
         {:error, {:invalid_workflow_config, format_errors(changeset)}}
-    end
-  end
-
-  @spec resolve_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil) :: map()
-  def resolve_turn_sandbox_policy(settings, workspace \\ nil) do
-    case settings.codex.turn_sandbox_policy do
-      %{} = policy ->
-        policy
-
-      _ ->
-        workspace
-        |> default_workspace_root(settings.workspace.root)
-        |> expand_local_workspace_root()
-        |> default_turn_sandbox_policy()
-    end
-  end
-
-  @spec resolve_runtime_turn_sandbox_policy(%__MODULE__{}, Path.t() | nil, keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def resolve_runtime_turn_sandbox_policy(settings, workspace \\ nil, opts \\ []) do
-    case settings.codex.turn_sandbox_policy do
-      %{} = policy ->
-        {:ok, policy}
-
-      _ ->
-        workspace
-        |> default_workspace_root(settings.workspace.root)
-        |> default_runtime_turn_sandbox_policy(opts)
     end
   end
 
@@ -471,8 +745,13 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:workspace, with: &Workspace.changeset/2)
     |> cast_embed(:worker, with: &Worker.changeset/2)
     |> cast_embed(:agent, with: &Agent.changeset/2)
-    |> cast_embed(:codex, with: &Codex.changeset/2)
-    |> cast_embed(:copilot, with: &Copilot.changeset/2)
+    |> cast_embed(:acpx, with: &Acpx.changeset/2)
+    |> cast_embed(:agents, with: &Agents.changeset/2)
+    |> cast_embed(:commit, with: &Commit.changeset/2)
+    |> cast_embed(:pr, with: &PR.changeset/2)
+    |> cast_embed(:validation, with: &Validation.changeset/2)
+    |> cast_embed(:self_correction, with: &SelfCorrection.changeset/2)
+    |> cast_embed(:logging, with: &Logging.changeset/2)
     |> cast_embed(:finalizer, with: &Finalizer.changeset/2)
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
@@ -491,13 +770,81 @@ defmodule SymphonyElixir.Config.Schema do
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
     }
 
-    codex = %{
-      settings.codex
-      | approval_policy: normalize_keys(settings.codex.approval_policy),
-        turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
+    agents = %{
+      settings.agents
+      | registry: normalize_agent_registry(settings.agents.registry)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    %{settings | tracker: tracker, workspace: workspace, agents: agents}
+  end
+
+  defp normalize_agent_registry(nil), do: default_agent_registry()
+  defp normalize_agent_registry(registry) when map_size(registry) == 0, do: default_agent_registry()
+
+  defp normalize_agent_registry(registry) when is_map(registry) do
+    registry
+    |> Enum.map(fn {k, v} -> {to_string(k), normalize_keys(v)} end)
+    |> Enum.into(%{})
+  end
+
+  defp default_agent_registry do
+    [
+      {"codex", "Codex", "codex", true, "warn"},
+      {"claude", "Claude", "claude", true, "warn"},
+      {"copilot", "Copilot", "copilot", true, "warn"},
+      {"gemini", "Gemini", "gemini", true, "warn"},
+      {"cursor", "Cursor", "cursor", true, "warn"},
+      {"opencode", "OpenCode", "opencode", true, "warn"},
+      {"qwen", "Qwen", "qwen", true, "warn"},
+      {"custom", "Custom ACP Agent", nil, false, "ignore"}
+    ]
+    |> Enum.map(fn {id, display_name, acpx_agent, enabled, on_unsupported} ->
+      {id, default_agent_entry(id, display_name, acpx_agent, enabled, on_unsupported)}
+    end)
+    |> Enum.into(%{})
+  end
+
+  defp default_agent_entry(id, display_name, acpx_agent, enabled, on_unsupported) do
+    %{
+      "enabled" => enabled,
+      "display_name" => display_name,
+      "issue_label" => "symphony/agent/#{id}",
+      "acpx_agent" => acpx_agent,
+      "custom_acpx_agent_command" => nil,
+      "model" => %{
+        "enabled" => false,
+        "config_key" => "model",
+        "value" => nil,
+        "on_unsupported" => on_unsupported
+      },
+      "permissions" => %{
+        "mode" => if(id == "custom", do: "approve-reads", else: "approve-all"),
+        "non_interactive" => "deny"
+      },
+      "runtime" => %{
+        "timeout_seconds" => 3600,
+        "ttl_seconds" => 300,
+        "max_attempts" => if(id == "custom", do: 2, else: 3),
+        "max_correction_attempts" => if(id == "custom", do: 1, else: 2)
+      },
+      "prerequisites" => %{
+        "checks" => prerequisite_checks(id)
+      }
+    }
+  end
+
+  defp prerequisite_checks("custom"), do: []
+
+  defp prerequisite_checks(id) do
+    command = if(id == "cursor", do: "cursor-agent", else: id)
+
+    [
+      %{
+        "command" => command,
+        "args" => ["--version"],
+        "kind" => "agent_prerequisite_check"
+      }
+    ]
   end
 
   defp normalize_keys(value) when is_map(value) do
@@ -508,9 +855,6 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_keys(value) when is_list(value), do: Enum.map(value, &normalize_keys/1)
   defp normalize_keys(value), do: value
-
-  defp normalize_optional_map(nil), do: nil
-  defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
 
   defp normalize_key(value) when is_atom(value), do: Atom.to_string(value)
   defp normalize_key(value), do: to_string(value)
@@ -592,48 +936,6 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp normalize_secret_value(_value), do: nil
-
-  defp default_turn_sandbox_policy(workspace) do
-    %{
-      "type" => "workspaceWrite",
-      "writableRoots" => [workspace],
-      "readOnlyAccess" => %{"type" => "fullAccess"},
-      "networkAccess" => false,
-      "excludeTmpdirEnvVar" => false,
-      "excludeSlashTmp" => false
-    }
-  end
-
-  defp default_runtime_turn_sandbox_policy(workspace_root, opts) when is_binary(workspace_root) do
-    if Keyword.get(opts, :remote, false) do
-      {:ok, default_turn_sandbox_policy(workspace_root)}
-    else
-      with expanded_workspace_root <- expand_local_workspace_root(workspace_root),
-           {:ok, canonical_workspace_root} <- PathSafety.canonicalize(expanded_workspace_root) do
-        {:ok, default_turn_sandbox_policy(canonical_workspace_root)}
-      end
-    end
-  end
-
-  defp default_runtime_turn_sandbox_policy(workspace_root, _opts) do
-    {:error, {:unsafe_turn_sandbox_policy, {:invalid_workspace_root, workspace_root}}}
-  end
-
-  defp default_workspace_root(workspace, _fallback) when is_binary(workspace) and workspace != "",
-    do: workspace
-
-  defp default_workspace_root(nil, fallback), do: fallback
-  defp default_workspace_root("", fallback), do: fallback
-  defp default_workspace_root(workspace, _fallback), do: workspace
-
-  defp expand_local_workspace_root(workspace_root)
-       when is_binary(workspace_root) and workspace_root != "" do
-    Path.expand(workspace_root)
-  end
-
-  defp expand_local_workspace_root(_workspace_root) do
-    Path.expand(Path.join(System.tmp_dir!(), "symphony_workspaces"))
-  end
 
   defp format_errors(changeset) do
     changeset

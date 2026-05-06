@@ -171,20 +171,27 @@ defmodule SymphonyElixir.GitHub.Adapter do
   @spec eligible?(Issue.t(), map()) :: boolean()
   def eligible?(%Issue{} = issue, tracker) do
     label_set = MapSet.new(issue.labels)
-    state = String.downcase(issue.state || "")
 
-    active_labels = List.wrap(tracker.active_labels)
+    state_open?(issue) and
+      has_active_labels?(label_set, tracker.active_labels) and
+      not blocked?(label_set, tracker) and
+      not in_terminal_state?(label_set, tracker)
+  end
 
-    cond do
-      state != "open" -> false
-      active_labels != [] and not has_any?(label_set, active_labels) -> false
-      has_any?(label_set, tracker.blocked_labels) -> false
-      MapSet.member?(label_set, tracker.running_label) -> false
-      MapSet.member?(label_set, tracker.review_label) -> false
-      MapSet.member?(label_set, tracker.done_label) -> false
-      not tracker.retry_failed and MapSet.member?(label_set, tracker.failed_label) -> false
-      true -> true
-    end
+  defp state_open?(issue), do: String.downcase(issue.state || "") == "open"
+
+  defp has_active_labels?(_label_set, []), do: true
+  defp has_active_labels?(label_set, active_labels), do: has_any?(label_set, active_labels)
+
+  defp blocked?(label_set, tracker) do
+    has_any?(label_set, tracker.blocked_labels)
+  end
+
+  defp in_terminal_state?(label_set, tracker) do
+    MapSet.member?(label_set, tracker.running_label) or
+      MapSet.member?(label_set, tracker.review_label) or
+      MapSet.member?(label_set, tracker.done_label) or
+      (not tracker.retry_failed and MapSet.member?(label_set, tracker.failed_label))
   end
 
   @doc """
@@ -253,9 +260,8 @@ defmodule SymphonyElixir.GitHub.Adapter do
       when target in ["running", "review", "failed", "done", "open"] do
     {add, remove} = transition_label_delta(target, tracker)
 
-    with :ok <- add_labels(repo, number, add),
-         :ok <- remove_labels(repo, number, remove) do
-      :ok
+    with :ok <- add_labels(repo, number, add) do
+      remove_labels(repo, number, remove)
     end
   end
 

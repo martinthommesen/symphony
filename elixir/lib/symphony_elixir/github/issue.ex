@@ -8,6 +8,7 @@ defmodule SymphonyElixir.GitHub.Issue do
   that need a struct compatible with the existing dashboard/orchestrator.
   """
 
+  alias SymphonyElixir.GitHub.Parser
   alias SymphonyElixir.Linear.Issue, as: LinearIssue
 
   defstruct [
@@ -76,10 +77,10 @@ defmodule SymphonyElixir.GitHub.Issue do
           created_at: parse_datetime(payload["createdAt"] || payload["created_at"]),
           updated_at: parse_datetime(payload["updatedAt"] || payload["updated_at"]),
           branch_name: "symphony/issue-#{number}",
-          priority: SymphonyElixir.GitHub.Parser.priority_from_labels(labels),
+          priority: Parser.priority_from_labels(labels),
           labels: labels,
           assignees: assignees,
-          blocked_by: SymphonyElixir.GitHub.Parser.blocked_by_from_body(body)
+          blocked_by: Parser.blocked_by_from_body(body)
         }
     end
   end

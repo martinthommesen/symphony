@@ -26,24 +26,6 @@ defmodule SymphonyElixir.GitHubConfigTest do
     assert settings.tracker.terminal_states == ["closed"]
   end
 
-  test "copilot defaults are autopilot/yolo/json with sane timeouts" do
-    config = %{"tracker" => %{"kind" => "github", "repo" => "owner/name"}}
-
-    assert {:ok, settings} = Schema.parse(config)
-    assert settings.copilot.command == "copilot"
-    assert settings.copilot.mode == "autopilot"
-    assert settings.copilot.permission_mode == "yolo"
-    assert settings.copilot.output_format == "json"
-    assert settings.copilot.max_autopilot_continues == 10
-    assert settings.copilot.turn_timeout_ms == 3_600_000
-    assert settings.copilot.read_timeout_ms == 5_000
-    assert settings.copilot.stall_timeout_ms == 300_000
-
-    assert "shell(git push)" in settings.copilot.deny_tools
-    assert "shell(gh pr)" in settings.copilot.deny_tools
-    assert "shell(gh issue)" in settings.copilot.deny_tools
-  end
-
   test "finalizer defaults preserve no auto-merge / no auto-close" do
     config = %{}
 
@@ -53,19 +35,5 @@ defmodule SymphonyElixir.GitHubConfigTest do
     assert settings.finalizer.open_pr == true
     assert settings.finalizer.close_issue == false
     assert settings.finalizer.merge_pr == false
-  end
-
-  test "invalid copilot mode is rejected" do
-    config = %{"copilot" => %{"command" => "copilot", "mode" => "nope"}}
-
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
-    assert message =~ "copilot.mode"
-  end
-
-  test "invalid permission_mode is rejected" do
-    config = %{"copilot" => %{"command" => "copilot", "permission_mode" => "lol"}}
-
-    assert {:error, {:invalid_workflow_config, message}} = Schema.parse(config)
-    assert message =~ "copilot.permission_mode"
   end
 end

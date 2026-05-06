@@ -1,0 +1,274 @@
+---
+tracker:
+  kind: github
+  repo: martinthommesen/symphony
+  active_labels:
+  - symphony
+  blocked_labels:
+  - symphony/blocked
+  running_label: symphony/running
+  done_label: symphony/done
+  failed_label: symphony/failed
+  review_label: symphony/review
+  retry_failed: false
+  active_states:
+  - open
+  terminal_states:
+  - closed
+workspace:
+  root: ".symphony/workspaces"
+  worktree_strategy: reuse
+  git_worktree_enabled: true
+  branch_prefix: symphony/
+  branch_name_template: symphony/issue-{{issue_number}}
+  base_branch: main
+  fetch_before_run: true
+  rebase_before_run: false
+  reset_dirty_workspace_policy: fail
+  cleanup_policy: never
+  retention_days: 14
+  max_workspace_size_bytes:
+  prune_stale_workspaces: false
+  isolate_dependency_caches: false
+agent:
+  max_concurrent_agents: 1
+  max_turns: 10
+  max_retry_backoff_ms: 300000
+  stall_timeout_ms: 300000
+acpx:
+  executable: acpx
+  pinned_version:
+  install_location: ".symphony/runtime/acpx"
+  config_location: ".symphony/runtime/acpx/config"
+  default_output_format: json
+  json_strict: true
+  suppress_reads: true
+  approve_mode: approve-all
+  non_interactive_permission_behavior: deny
+  auth_policy: auto
+  extra_argv: []
+  custom_agent_definitions: {}
+  session_naming_template: symphony-{{issue_number}}
+agents:
+  routing:
+    required_dispatch_label: symphony
+    label_prefix: symphony/agent/
+    default_agent: codex
+    multi_agent_policy: reject
+    retry_failed: false
+    aliases:
+      codex: codex
+      claude: claude
+      copilot: copilot
+  registry:
+    codex:
+      enabled: true
+      display_name: Codex
+      issue_label: symphony/agent/codex
+      acpx_agent: codex
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+    claude:
+      enabled: true
+      display_name: Claude
+      issue_label: symphony/agent/claude
+      acpx_agent: claude
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+    copilot:
+      enabled: true
+      display_name: Copilot
+      issue_label: symphony/agent/copilot
+      acpx_agent: copilot
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+    custom:
+      enabled: false
+      display_name: Custom ACP Agent
+      issue_label: symphony/agent/custom
+      acpx_agent:
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: ignore
+      permissions:
+        mode: approve-reads
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 2
+        max_correction_attempts: 1
+    gemini:
+      enabled: true
+      display_name: Gemini
+      issue_label: symphony/agent/gemini
+      acpx_agent: gemini
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+    cursor:
+      enabled: true
+      display_name: Cursor
+      issue_label: symphony/agent/cursor
+      acpx_agent: cursor
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+    opencode:
+      enabled: true
+      display_name: OpenCode
+      issue_label: symphony/agent/opencode
+      acpx_agent: opencode
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+    qwen:
+      enabled: true
+      display_name: Qwen
+      issue_label: symphony/agent/qwen
+      acpx_agent: qwen
+      custom_acpx_agent_command:
+      model:
+        enabled: false
+        config_key: model
+        value:
+        on_unsupported: warn
+      permissions:
+        mode: approve-all
+        non_interactive: deny
+      runtime:
+        timeout_seconds: 3600
+        ttl_seconds: 300
+        max_attempts: 3
+        max_correction_attempts: 2
+commit:
+  enabled: true
+  strategy: agent_commits
+  message_template: 'symphony: implement issue #{{issue_number}}'
+  sign_commits: false
+  allow_empty: false
+  include_untracked: false
+  run_pre_commit_hooks: false
+  commit_only_after_validation: false
+pr:
+  enabled: true
+  draft: true
+  update_existing: true
+  include_issue_link: true
+  reviewers: []
+  team_reviewers: []
+  assignees: []
+  labels: []
+  request_review: false
+  auto_merge: false
+  close_issue_on_merge: false
+  comment_on_issue: true
+  include_logs_summary: true
+validation:
+  commands: []
+  max_retries: 0
+  include_logs_in_corrective_prompt: true
+  fail_if_no_diff: true
+  fail_if_no_commit: false
+  fail_if_pr_cannot_be_created: true
+self_correction:
+  enabled: true
+  max_correction_attempts: 2
+  retry_backoff_ms: 10000
+  classify_failures: true
+  retry_on_stall: true
+  retry_on_acpx_crash: true
+  retry_on_validation_failure: true
+  retry_on_no_changes: true
+  retry_on_pr_creation_failure: true
+  retry_on_merge_conflict: true
+  retry_on_dependency_missing: true
+logging:
+  level: info
+  directory: ".symphony/logs"
+  ndjson_enabled: true
+  text_logs_enabled: false
+  event_retention_days: 30
+  redact_secrets: true
+  raw_acpx_event_capture: false
+  raw_stdout_stderr_capture: false
+  compress_old_logs: false
+  tui_audit_log: true
+finalizer:
+  auto_commit_uncommitted: true
+  push_branch: true
+  open_pr: true
+  close_issue: false
+  merge_pr: false

@@ -7,8 +7,8 @@ defmodule SymphonyElixir.GitHub.CLI do
   before they are spliced into argv. We never use shell strings.
   """
 
+  alias SymphonyElixir.{Redaction, StructuredLogger}
   alias SymphonyElixir.RepoId
-  alias SymphonyElixir.Redaction
 
   require Logger
 
@@ -58,7 +58,10 @@ defmodule SymphonyElixir.GitHub.CLI do
   def run(args) when is_list(args) do
     Enum.each(args, &validate_arg!/1)
 
+    started_at = System.monotonic_time(:millisecond)
     {output, status} = runner().(args, stderr_to_stdout: true)
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+    log_github_command(args, status, output, duration_ms)
 
     case status do
       0 ->
@@ -78,7 +81,11 @@ defmodule SymphonyElixir.GitHub.CLI do
   def run_lenient(args) when is_list(args) do
     Enum.each(args, &validate_arg!/1)
 
+    started_at = System.monotonic_time(:millisecond)
     {output, status} = runner().(args, stderr_to_stdout: true)
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+    log_github_command(args, status, output, duration_ms)
+
     {status, Redaction.redact(output)}
   end
 
@@ -108,5 +115,22 @@ defmodule SymphonyElixir.GitHub.CLI do
     args
     |> Enum.take(3)
     |> Enum.join(" ")
+  end
+
+  defp log_github_command(args, status, output, duration_ms) do
+    StructuredLogger.log_named("github", %{
+      event_type: "github_cli_command",
+      severity: if(status == 0, do: "info", else: "error"),
+      message: "gh #{summary(args)} exited #{status}",
+      payload: %{
+        executable: "gh",
+        argv: Enum.map(args, &Redaction.redact/1),
+        exit_code: status,
+        duration_ms: duration_ms,
+        output: Redaction.redact(output)
+      }
+    })
+  rescue
+    _ -> :ok
   end
 end

@@ -3,11 +3,9 @@
 This directory contains the current Elixir/OTP implementation of Symphony, based on
 [`SPEC.md`](../SPEC.md) at the repository root.
 
-> **Default stack:** GitHub Issues + GitHub Copilot CLI (autopilot mode).
-> See the top-level [README](../README.md#github-issues--copilot-cli-quickstart)
-> for setup, and [MIGRATION_NOTES.md](../MIGRATION_NOTES.md) for the
-> Linear→GitHub migration mapping. The Linear/Codex modules are retained for
-> backwards compatibility (see [legacy/README.md](legacy/README.md)).
+> **Default stack:** Linear + acpx (any acpx-compatible agent).
+> See the top-level [README](../README.md) for setup.
+> Runtime agent execution goes through acpx; no direct Codex/Copilot spawning.
 
 > [!WARNING]
 > Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
@@ -21,13 +19,10 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 
 1. Polls Linear for candidate work
 2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
-
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+3. Routes the issue to an agent via `symphony/agent/<agent-id>` labels
+4. Launches acpx inside the workspace with the selected agent
+5. Sends a workflow prompt to the agent via acpx
+6. Keeps the agent working on the issue until the work is done
 
 If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
 Symphony stops the active agent for that issue and cleans up matching workspaces.
@@ -86,8 +81,9 @@ Optional flags:
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
 - `--port` also starts the Phoenix observability service (default: disabled)
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+Runtime configuration lives in `.symphony/config.yml`. The repo-owned
+`.symphony/WORKFLOW.md` Markdown body is the generic agent session prompt.
+Existing `WORKFLOW.md` front matter is still read for development and tests.
 
 Minimal example:
 
@@ -104,8 +100,17 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
-codex:
-  command: codex app-server
+acpx:
+  executable: acpx
+agents:
+  routing:
+    label_prefix: "symphony/agent/"
+    default_agent: "backend"
+  registry:
+    backend:
+      enabled: true
+      acpx_agent: "backend"
+      permission_mode: "approve-all"
 ---
 
 You are working on a Linear issue {{ issue.identifier }}.
@@ -116,16 +121,7 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 Notes:
 
 - If a value is missing, defaults are used.
-- Safer Codex defaults are used when policy fields are omitted:
-  - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
-  - `codex.thread_sandbox` defaults to `workspace-write`
-  - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
-- Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
-- Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
-  unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
-  Symphony validation.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
+- `agent.max_turns` caps how many back-to-back agent turns Symphony will run in a single agent
   invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
 - If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
   identifier, title, and body.
@@ -135,9 +131,7 @@ Notes:
   the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
 - `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
 - For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
-  while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
-  launched shell.
+- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling.
 
 ```yaml
 tracker:
@@ -147,8 +141,8 @@ workspace:
 hooks:
   after_create: |
     git clone --depth 1 "$SOURCE_REPO_URL" .
-codex:
-  command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
+acpx:
+  executable: "$ACPX_BIN"
 ```
 
 - If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
@@ -180,7 +174,7 @@ make all
 ```
 
 Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real `codex app-server` session:
+resources and launch a real acpx agent session:
 
 ```bash
 cd elixir
@@ -206,7 +200,7 @@ the transport representative without depending on long-lived external machines.
 Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
 
 The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
+a real agent turn, verifies the workspace side effect, requires the agent to comment on and close the
 Linear issue, then marks the project completed so the run remains visible in Linear.
 
 ## FAQ
