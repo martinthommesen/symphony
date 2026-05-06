@@ -28,12 +28,19 @@ hooks:
 agent:
   max_concurrent_agents: 10
   max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
+acpx:
+  executable: acpx
+agents:
+  routing:
+    label_prefix: "symphony/agent/"
+    default_agent: "backend"
+  registry:
+    backend:
+      enabled: true
+      display_name: "Backend Agent"
+      issue_label: "symphony/agent/backend"
+      acpx_agent: "backend"
+      permission_mode: "approve-all"
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

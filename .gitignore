@@ -1,0 +1,6 @@
+.symphony/logs/*
+!.symphony/logs/.gitkeep
+elixir/.symphony/logs/*
+!elixir/.symphony/logs/.gitkeep
+tui/node_modules/
+goal.md

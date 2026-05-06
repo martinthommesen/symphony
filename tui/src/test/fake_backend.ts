@@ -15,7 +15,7 @@ export interface FakeBackendOptions {
 }
 
 export function startFakeBackend(options: FakeBackendOptions = {}) {
-  const port = options.port ?? 0;
+  const port = options.port ?? randomEphemeralPort();
   const controlToken = options.controlToken ?? null;
   let events = [...(options.initialEvents ?? [])];
   let issues = [...(options.initialIssues ?? [])];
@@ -86,7 +86,7 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
           counts: { running: 0, retrying: 0, review: 0, failed: 0, blocked: 0 },
           running: [],
           retrying: [],
-          codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+          agent_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
           rate_limits: null,
           polling: { paused: false, checking: false, next_poll_in_ms: 0, poll_interval_ms: 30000 },
           agent_capacity: { max: 10, running: 0, available: 10 },
@@ -204,4 +204,8 @@ export function startFakeBackend(options: FakeBackendOptions = {}) {
       subscribers.clear();
     },
   };
+}
+
+function randomEphemeralPort(): number {
+  return 49_152 + Math.floor(Math.random() * 16_384);
 }

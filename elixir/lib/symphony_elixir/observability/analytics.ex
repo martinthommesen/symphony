@@ -31,7 +31,7 @@ defmodule SymphonyElixir.Observability.Analytics do
     snapshot_running = (snapshot && Map.get(snapshot, :running)) || []
     snapshot_retrying = (snapshot && Map.get(snapshot, :retrying)) || []
     max_concurrent = (snapshot && Map.get(snapshot, :max_concurrent_agents)) || 0
-    codex_totals = (snapshot && Map.get(snapshot, :codex_totals)) || %{}
+    agent_totals = (snapshot && Map.get(snapshot, :agent_totals)) || %{}
 
     %{
       generated_at: iso_now(),
@@ -69,11 +69,11 @@ defmodule SymphonyElixir.Observability.Analytics do
           p95_seconds: percentile(runtimes, 95)
         },
         tokens: %{
-          input_tokens: Map.get(codex_totals, :input_tokens, 0),
-          output_tokens: Map.get(codex_totals, :output_tokens, 0),
-          total_tokens: Map.get(codex_totals, :total_tokens, 0),
-          seconds_running: Map.get(codex_totals, :seconds_running, 0),
-          tokens_per_second: tokens_per_second(codex_totals)
+          input_tokens: Map.get(agent_totals, :input_tokens, 0),
+          output_tokens: Map.get(agent_totals, :output_tokens, 0),
+          total_tokens: Map.get(agent_totals, :total_tokens, 0),
+          seconds_running: Map.get(agent_totals, :seconds_running, 0),
+          tokens_per_second: tokens_per_second(agent_totals)
         },
         worker_utilization: worker_utilization(snapshot_running),
         top_token_consumers: top_token_consumers(snapshot_running)
@@ -160,7 +160,7 @@ defmodule SymphonyElixir.Observability.Analytics do
   end
 
   defp total_tokens_from_entry(entry) do
-    Map.get(entry, :codex_total_tokens) || Map.get(entry, :total_tokens) || 0
+    Map.get(entry, :agent_total_tokens) || Map.get(entry, :total_tokens) || 0
   end
 
   defp source_mode([]), do: "snapshot_only"

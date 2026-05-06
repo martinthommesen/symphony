@@ -14,7 +14,7 @@ defmodule SymphonyElixir.LiveE2ETest do
   @docker_compose_file Path.join(@docker_support_dir, "docker-compose.yml")
   @result_file "LIVE_E2E_RESULT.txt"
   @live_e2e_skip_reason if(System.get_env("SYMPHONY_RUN_LIVE_E2E") != "1",
-                          do: "set SYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/Codex end-to-end test"
+                          do: "set SYMPHONY_RUN_LIVE_E2E=1 to enable the real Linear/acpx end-to-end test"
                         )
 
   @team_query """
@@ -402,7 +402,7 @@ defmodule SymphonyElixir.LiveE2ETest do
       when is_binary(workspace_path) ->
         runtime_info
 
-      {:codex_worker_update, ^issue_id, _message} ->
+      {:agent_worker_update, ^issue_id, _message} ->
         receive_runtime_info!(issue_id)
     after
       5_000 ->
@@ -459,8 +459,7 @@ defmodule SymphonyElixir.LiveE2ETest do
         tracker_project_slug: "bootstrap",
         workspace_root: worker_setup.workspace_root,
         worker_ssh_hosts: worker_setup.ssh_worker_hosts,
-        codex_command: worker_setup.codex_command,
-        codex_approval_policy: "never",
+        acpx_executable: worker_setup.acpx_executable,
         observability_enabled: false
       )
 
@@ -490,10 +489,8 @@ defmodule SymphonyElixir.LiveE2ETest do
         tracker_terminal_states: terminal_states,
         workspace_root: worker_setup.workspace_root,
         worker_ssh_hosts: worker_setup.ssh_worker_hosts,
-        codex_command: worker_setup.codex_command,
-        codex_approval_policy: "never",
-        codex_turn_timeout_ms: 600_000,
-        codex_stall_timeout_ms: 600_000,
+        acpx_executable: worker_setup.acpx_executable,
+        agent_stall_timeout_ms: 600_000,
         observability_enabled: false,
         prompt: live_prompt(project["slugId"])
       )
@@ -521,7 +518,7 @@ defmodule SymphonyElixir.LiveE2ETest do
   defp live_worker_setup!(:local, _run_id, test_root) when is_binary(test_root) do
     %{
       cleanup: fn -> :ok end,
-      codex_command: "codex app-server",
+      acpx_executable: "acpx",
       ssh_worker_hosts: [],
       workspace_root: Path.join(test_root, "workspaces")
     }
@@ -559,7 +556,7 @@ defmodule SymphonyElixir.LiveE2ETest do
 
     %{
       cleanup: fn -> cleanup_remote_test_root(remote_test_root, ssh_worker_hosts) end,
-      codex_command: "codex app-server",
+      acpx_executable: "acpx",
       ssh_worker_hosts: ssh_worker_hosts,
       workspace_root: remote_workspace_root
     }
@@ -597,7 +594,7 @@ defmodule SymphonyElixir.LiveE2ETest do
             cleanup_remote_test_root(remote_test_root, worker_hosts)
             base_cleanup.()
           end,
-          codex_command: "codex app-server",
+          acpx_executable: "acpx",
           ssh_worker_hosts: worker_hosts,
           workspace_root: remote_workspace_root
         }

@@ -2,14 +2,16 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-# symphony-tui.sh — launches the OpenTUI operations cockpit. Connects to a
-# running Symphony backend (default http://127.0.0.1:4000). Read-only when
-# no SYMPHONY_CONTROL_TOKEN is configured.
+die() { printf '[symphony-tui] ERROR: %s\n' "$*" >&2; exit 1; }
+# symphony-tui.sh
+#
+# Runs the OpenTUI operations cockpit by default. Other commands such as
+# `view`, `set`, and `logs` use the configuration console.
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$REPO_ROOT"
 
-SYMPHONY_HOME="${SYMPHONY_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/symphony-copilot}"
+SYMPHONY_HOME="${SYMPHONY_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/symphony}"
 TUI_DIR_CANDIDATES=(
   "$REPO_ROOT/tui"
   "$SYMPHONY_HOME/tui"
@@ -29,7 +31,20 @@ if [[ -z "$TUI_DIR" ]]; then
   exit 1
 fi
 
-if ! command -v bun >/dev/null 2>&1; then
+CONFIG_PATH=".symphony/config.yml"
+if [[ ! -f "$CONFIG_PATH" ]]; then
+  die "Config not found at $CONFIG_PATH. Run scripts/install-symphony.sh first."
+fi
+
+mkdir -p ".symphony/logs"
+
+BUN_BIN="${BUN_BIN:-bun}"
+MANAGED_BUN_BIN="$REPO_ROOT/.symphony/runtime/bun/node_modules/.bin/bun"
+if ! command -v "$BUN_BIN" >/dev/null 2>&1 && [[ -x "$MANAGED_BUN_BIN" ]]; then
+  BUN_BIN="$MANAGED_BUN_BIN"
+fi
+
+if ! command -v "$BUN_BIN" >/dev/null 2>&1; then
   cat >&2 <<'EOF'
 [symphony-tui] Bun is required to run the TUI (OpenTUI's native renderer
               uses Bun's FFI). Install Bun from https://bun.sh and re-run.
@@ -39,7 +54,12 @@ fi
 
 if [[ ! -d "$TUI_DIR/node_modules" ]]; then
   printf '[symphony-tui] Installing TUI dependencies in %s...\n' "$TUI_DIR" >&2
-  ( cd "$TUI_DIR" && bun install --silent ) >&2
+  ( cd "$TUI_DIR" && "$BUN_BIN" install --silent ) >&2
+fi
+
+COMMAND="${1:-cockpit}"
+if [[ "$#" -gt 0 ]]; then
+  shift
 fi
 
 # Resolve the control token: env var beats on-disk file. We never log it.
@@ -51,18 +71,28 @@ if [[ -z "${SYMPHONY_CONTROL_TOKEN:-}" && -f "$TOKEN_FILE" ]]; then
   fi
 fi
 
-export SYMPHONY_API_URL="${SYMPHONY_API_URL:-http://127.0.0.1:4000}"
+if [[ "$COMMAND" == "cockpit" ]]; then
+  export SYMPHONY_API_URL="${SYMPHONY_API_URL:-http://127.0.0.1:4000}"
 
-if [[ -z "${SYMPHONY_CONTROL_TOKEN:-}" ]]; then
-  printf '[symphony-tui] No control token configured; running in READ-ONLY mode.\n' >&2
-  printf '              Set SYMPHONY_CONTROL_TOKEN or create %s.\n' "$TOKEN_FILE" >&2
-fi
+  if [[ -z "${SYMPHONY_CONTROL_TOKEN:-}" ]]; then
+    printf '[symphony-tui] No control token configured; running in READ-ONLY mode.\n' >&2
+    printf '              Set SYMPHONY_CONTROL_TOKEN or create %s.\n' "$TOKEN_FILE" >&2
+  fi
 
-# Sanity check: backend reachable?
-if ! curl -sf "${SYMPHONY_API_URL%/}/api/v1/health" >/dev/null 2>&1; then
-  printf '[symphony-tui] Backend not reachable at %s/api/v1/health.\n' "$SYMPHONY_API_URL" >&2
-  printf '              Start it with: scripts/symphony-start.sh\n' >&2
+  if ! curl -sf "${SYMPHONY_API_URL%/}/api/v1/health" >/dev/null 2>&1; then
+    printf '[symphony-tui] Backend not reachable at %s/api/v1/health.\n' "$SYMPHONY_API_URL" >&2
+    printf '              Start it with: scripts/symphony-start.sh\n' >&2
+  fi
+
+  cd "$TUI_DIR"
+  SYMPHONY_CONFIG="$REPO_ROOT/$CONFIG_PATH" \
+  SYMPHONY_TUI_AUDIT="$REPO_ROOT/.symphony/logs/tui-audit.ndjson" \
+  SYMPHONY_LOG_DIR="$REPO_ROOT/.symphony/logs" \
+    exec "$BUN_BIN" run cockpit "$@"
 fi
 
 cd "$TUI_DIR"
-exec bun run src/main.ts "$@"
+SYMPHONY_CONFIG="$REPO_ROOT/$CONFIG_PATH" \
+SYMPHONY_TUI_AUDIT="$REPO_ROOT/.symphony/logs/tui-audit.ndjson" \
+SYMPHONY_LOG_DIR="$REPO_ROOT/.symphony/logs" \
+  exec "$BUN_BIN" run start "$COMMAND" "$@"

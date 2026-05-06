@@ -8,7 +8,6 @@ defmodule SymphonyElixir.TestSupport do
 
       alias SymphonyElixir.AgentRunner
       alias SymphonyElixir.CLI
-      alias SymphonyElixir.Codex.AppServer
       alias SymphonyElixir.Config
       alias SymphonyElixir.HttpServer
       alias SymphonyElixir.Linear.Client
@@ -25,6 +24,8 @@ defmodule SymphonyElixir.TestSupport do
         only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
 
       setup do
+        {:ok, _apps} = Application.ensure_all_started(:symphony_elixir)
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -70,6 +71,14 @@ defmodule SymphonyElixir.TestSupport do
   def restore_env(key, value), do: System.put_env(key, value)
 
   def stop_default_http_server do
+    if is_nil(Process.whereis(SymphonyElixir.Supervisor)) do
+      :ok
+    else
+      stop_default_http_server_child()
+    end
+  end
+
+  defp stop_default_http_server_child do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn
            {SymphonyElixir.HttpServer, _pid, _type, _modules} -> true
            _child -> false
@@ -107,13 +116,11 @@ defmodule SymphonyElixir.TestSupport do
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
-          codex_command: "codex app-server",
-          codex_approval_policy: %{reject: %{sandbox_approval: true, rules: true, mcp_elicitations: true}},
-          codex_thread_sandbox: "workspace-write",
-          codex_turn_sandbox_policy: nil,
-          codex_turn_timeout_ms: 3_600_000,
-          codex_read_timeout_ms: 5_000,
-          codex_stall_timeout_ms: 300_000,
+          agent_stall_timeout_ms: 300_000,
+          acpx_executable: "acpx",
+          agents_required_dispatch_label: "",
+          agents_routing: nil,
+          agents_registry: nil,
           hook_after_create: nil,
           hook_before_run: nil,
           hook_after_run: nil,
@@ -124,6 +131,19 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          self_correction_enabled: true,
+          self_correction_max_correction_attempts: 2,
+          self_correction_retry_backoff_ms: 10_000,
+          self_correction_retry_on_acpx_crash: true,
+          self_correction_retry_on_stall: true,
+          self_correction_retry_on_validation_failure: true,
+          self_correction_retry_on_no_changes: true,
+          self_correction_retry_on_pr_creation_failure: true,
+          self_correction_retry_on_merge_conflict: true,
+          self_correction_retry_on_dependency_missing: true,
+          validation_commands: [],
+          validation_fail_if_no_diff: false,
+          validation_include_logs_in_corrective_prompt: true,
           prompt: @workflow_prompt
         ],
         overrides
@@ -144,13 +164,11 @@ defmodule SymphonyElixir.TestSupport do
     max_turns = Keyword.get(config, :max_turns)
     max_retry_backoff_ms = Keyword.get(config, :max_retry_backoff_ms)
     max_concurrent_agents_by_state = Keyword.get(config, :max_concurrent_agents_by_state)
-    codex_command = Keyword.get(config, :codex_command)
-    codex_approval_policy = Keyword.get(config, :codex_approval_policy)
-    codex_thread_sandbox = Keyword.get(config, :codex_thread_sandbox)
-    codex_turn_sandbox_policy = Keyword.get(config, :codex_turn_sandbox_policy)
-    codex_turn_timeout_ms = Keyword.get(config, :codex_turn_timeout_ms)
-    codex_read_timeout_ms = Keyword.get(config, :codex_read_timeout_ms)
-    codex_stall_timeout_ms = Keyword.get(config, :codex_stall_timeout_ms)
+    agent_stall_timeout_ms = Keyword.get(config, :agent_stall_timeout_ms)
+    acpx_executable = Keyword.get(config, :acpx_executable)
+    agents_required_dispatch_label = Keyword.get(config, :agents_required_dispatch_label)
+    agents_routing = Keyword.get(config, :agents_routing)
+    agents_registry = Keyword.get(config, :agents_registry)
     hook_after_create = Keyword.get(config, :hook_after_create)
     hook_before_run = Keyword.get(config, :hook_before_run)
     hook_after_run = Keyword.get(config, :hook_after_run)
@@ -161,6 +179,19 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    self_correction_enabled = Keyword.get(config, :self_correction_enabled)
+    self_correction_max_correction_attempts = Keyword.get(config, :self_correction_max_correction_attempts)
+    self_correction_retry_backoff_ms = Keyword.get(config, :self_correction_retry_backoff_ms)
+    self_correction_retry_on_acpx_crash = Keyword.get(config, :self_correction_retry_on_acpx_crash)
+    self_correction_retry_on_stall = Keyword.get(config, :self_correction_retry_on_stall)
+    self_correction_retry_on_validation_failure = Keyword.get(config, :self_correction_retry_on_validation_failure)
+    self_correction_retry_on_no_changes = Keyword.get(config, :self_correction_retry_on_no_changes)
+    self_correction_retry_on_pr_creation_failure = Keyword.get(config, :self_correction_retry_on_pr_creation_failure)
+    self_correction_retry_on_merge_conflict = Keyword.get(config, :self_correction_retry_on_merge_conflict)
+    self_correction_retry_on_dependency_missing = Keyword.get(config, :self_correction_retry_on_dependency_missing)
+    validation_commands = Keyword.get(config, :validation_commands)
+    validation_fail_if_no_diff = Keyword.get(config, :validation_fail_if_no_diff)
+    validation_include_logs_in_corrective_prompt = Keyword.get(config, :validation_include_logs_in_corrective_prompt)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -184,17 +215,34 @@ defmodule SymphonyElixir.TestSupport do
         "  max_turns: #{yaml_value(max_turns)}",
         "  max_retry_backoff_ms: #{yaml_value(max_retry_backoff_ms)}",
         "  max_concurrent_agents_by_state: #{yaml_value(max_concurrent_agents_by_state)}",
-        "codex:",
-        "  command: #{yaml_value(codex_command)}",
-        "  approval_policy: #{yaml_value(codex_approval_policy)}",
-        "  thread_sandbox: #{yaml_value(codex_thread_sandbox)}",
-        "  turn_sandbox_policy: #{yaml_value(codex_turn_sandbox_policy)}",
-        "  turn_timeout_ms: #{yaml_value(codex_turn_timeout_ms)}",
-        "  read_timeout_ms: #{yaml_value(codex_read_timeout_ms)}",
-        "  stall_timeout_ms: #{yaml_value(codex_stall_timeout_ms)}",
+        "  stall_timeout_ms: #{yaml_value(agent_stall_timeout_ms)}",
+        "agents:",
+        "  routing:",
+        agents_routing_yaml(
+          Map.merge(
+            %{"required_dispatch_label" => agents_required_dispatch_label},
+            agents_routing || %{}
+          )
+        ),
+        agents_registry_yaml(agents_registry),
+        "acpx:",
+        "  executable: #{yaml_value(acpx_executable)}",
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
+        validation_yaml(validation_commands, validation_fail_if_no_diff, validation_include_logs_in_corrective_prompt),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
+        self_correction_yaml(
+          enabled: self_correction_enabled,
+          max_correction_attempts: self_correction_max_correction_attempts,
+          retry_backoff_ms: self_correction_retry_backoff_ms,
+          retry_on_acpx_crash: self_correction_retry_on_acpx_crash,
+          retry_on_stall: self_correction_retry_on_stall,
+          retry_on_validation_failure: self_correction_retry_on_validation_failure,
+          retry_on_no_changes: self_correction_retry_on_no_changes,
+          retry_on_pr_creation_failure: self_correction_retry_on_pr_creation_failure,
+          retry_on_merge_conflict: self_correction_retry_on_merge_conflict,
+          retry_on_dependency_missing: self_correction_retry_on_dependency_missing
+        ),
         "---",
         prompt
       ]
@@ -290,5 +338,66 @@ defmodule SymphonyElixir.TestSupport do
       |> Enum.map_join("\n", &("    " <> &1))
 
     "  #{name}: |\n#{indented}"
+  end
+
+  defp agents_routing_yaml(nil), do: nil
+
+  defp agents_routing_yaml(routing) when is_map(routing) do
+    Enum.map_join(routing, "\n", fn {key, value} ->
+      "    #{key}: #{yaml_value(value)}"
+    end)
+  end
+
+  defp agents_registry_yaml(nil), do: nil
+
+  defp agents_registry_yaml(registry) when is_map(registry) do
+    entries =
+      Enum.map_join(registry, "\n", fn {key, value} ->
+        "    #{key}: #{yaml_value(value)}"
+      end)
+
+    "  registry:\n#{entries}"
+  end
+
+  defp self_correction_yaml(opts) when is_list(opts) do
+    defaults = [
+      enabled: true,
+      max_correction_attempts: 2,
+      retry_backoff_ms: 5000,
+      retry_on_acpx_crash: true,
+      retry_on_stall: true,
+      retry_on_validation_failure: true,
+      retry_on_no_changes: true,
+      retry_on_pr_creation_failure: true,
+      retry_on_merge_conflict: true,
+      retry_on_dependency_missing: true
+    ]
+
+    opts = Keyword.merge(defaults, opts)
+
+    [
+      "self_correction:",
+      "  enabled: #{yaml_value(opts[:enabled])}",
+      "  max_correction_attempts: #{yaml_value(opts[:max_correction_attempts])}",
+      "  retry_backoff_ms: #{yaml_value(opts[:retry_backoff_ms])}",
+      "  retry_on_acpx_crash: #{yaml_value(opts[:retry_on_acpx_crash])}",
+      "  retry_on_stall: #{yaml_value(opts[:retry_on_stall])}",
+      "  retry_on_validation_failure: #{yaml_value(opts[:retry_on_validation_failure])}",
+      "  retry_on_no_changes: #{yaml_value(opts[:retry_on_no_changes])}",
+      "  retry_on_pr_creation_failure: #{yaml_value(opts[:retry_on_pr_creation_failure])}",
+      "  retry_on_merge_conflict: #{yaml_value(opts[:retry_on_merge_conflict])}",
+      "  retry_on_dependency_missing: #{yaml_value(opts[:retry_on_dependency_missing])}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp validation_yaml(commands, fail_if_no_diff, include_logs) do
+    [
+      "validation:",
+      "  commands: #{yaml_value(commands)}",
+      "  include_logs_in_corrective_prompt: #{yaml_value(include_logs)}",
+      "  fail_if_no_diff: #{yaml_value(fail_if_no_diff)}"
+    ]
+    |> Enum.join("\n")
   end
 end

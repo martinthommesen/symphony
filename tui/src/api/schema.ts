@@ -206,7 +206,7 @@ export function parseState(value: unknown): StatePayload {
     retrying: asArray(obj.retrying)
       .map(parseRetryEntry)
       .filter((e): e is RetryEntry => e !== null),
-    codex_totals: asObject(obj.codex_totals) ?? {},
+    agent_totals: asObject(obj.agent_totals) ?? {},
     rate_limits: obj.rate_limits ?? null,
     polling: asObject(obj.polling) ?? {},
     agent_capacity: asObject(obj.agent_capacity) ?? {},

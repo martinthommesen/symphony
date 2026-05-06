@@ -101,6 +101,8 @@ defmodule SymphonyElixir.Redaction do
     |> redact_with_patterns()
   end
 
+  def redact(value), do: value
+
   # Keep the `Authorization:` prefix and any `Bearer ` indicator so debug
   # logs retain context. Only the token body is replaced.
   defp redact_authorization_headers(value) do
@@ -110,8 +112,6 @@ defmodule SymphonyElixir.Redaction do
       fn _full, prefix, scheme -> "#{prefix}#{scheme}#{@placeholder}" end
     )
   end
-
-  def redact(value), do: value
 
   @doc """
   Iolist-friendly redaction for callers that may pass IO data.

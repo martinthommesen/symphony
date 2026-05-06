@@ -20,12 +20,6 @@ defmodule SymphonyElixir.Config do
   {% endif %}
   """
 
-  @type codex_runtime_settings :: %{
-          approval_policy: String.t() | map(),
-          thread_sandbox: String.t(),
-          turn_sandbox_policy: map()
-        }
-
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -61,17 +55,6 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
-  @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
-  def codex_turn_sandbox_policy(workspace \\ nil) do
-    case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do
-      {:ok, policy} ->
-        policy
-
-      {:error, reason} ->
-        raise ArgumentError, message: "Invalid codex turn sandbox policy: #{inspect(reason)}"
-    end
-  end
-
   @spec workflow_prompt() :: String.t()
   def workflow_prompt do
     case Workflow.current() do
@@ -98,47 +81,70 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  @spec codex_runtime_settings(Path.t() | nil, keyword()) ::
-          {:ok, codex_runtime_settings()} | {:error, term()}
-  def codex_runtime_settings(workspace \\ nil, opts \\ []) do
-    with {:ok, settings} <- settings() do
-      with {:ok, turn_sandbox_policy} <-
-             Schema.resolve_runtime_turn_sandbox_policy(settings, workspace, opts) do
-        {:ok,
-         %{
-           approval_policy: settings.codex.approval_policy,
-           thread_sandbox: settings.codex.thread_sandbox,
-           turn_sandbox_policy: turn_sandbox_policy
-         }}
-      end
+  @spec agent_config(String.t()) :: map() | nil
+  def agent_config(agent_id) when is_binary(agent_id) do
+    settings = settings!()
+    Map.get(settings.agents.registry, agent_id)
+  end
+
+  @spec default_agent() :: String.t()
+  def default_agent do
+    settings!().agents.routing.default_agent
+  end
+
+  @spec acpx_executable() :: String.t()
+  def acpx_executable do
+    settings!().acpx.executable
+  end
+
+  @spec agent_timeout_ms(String.t()) :: non_neg_integer()
+  def agent_timeout_ms(agent_id) when is_binary(agent_id) do
+    case agent_config(agent_id) do
+      nil ->
+        3_600_000
+
+      config ->
+        runtime = Map.get(config, "runtime", %{})
+        (Map.get(config, "timeout_seconds") || Map.get(runtime, "timeout_seconds", 3600)) * 1_000
     end
+  end
+
+  @spec agent_read_timeout_ms() :: non_neg_integer()
+  def agent_read_timeout_ms do
+    5_000
+  end
+
+  @spec agent_stall_timeout_ms() :: non_neg_integer()
+  def agent_stall_timeout_ms do
+    settings!().agent.stall_timeout_ms
   end
 
   # credo:disable-for-next-line
   defp validate_semantics(settings) do
-    cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
-
-      settings.tracker.kind not in ["linear", "memory", "github"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      settings.tracker.kind == "github" and not SymphonyElixir.RepoId.valid?(settings.tracker.repo) ->
-        {:error, :missing_or_invalid_github_repo}
-
-      settings.copilot.mode == "acp" ->
-        {:error, :copilot_acp_mode_not_implemented}
-
-      true ->
-        :ok
+    with :ok <- validate_tracker_kind(settings.tracker),
+         :ok <- validate_linear_settings(settings.tracker) do
+      validate_github_settings(settings.tracker)
     end
   end
+
+  defp validate_tracker_kind(%{kind: nil}), do: {:error, :missing_tracker_kind}
+
+  defp validate_tracker_kind(%{kind: kind}) when kind in ["linear", "memory", "github"], do: :ok
+  defp validate_tracker_kind(%{kind: kind}), do: {:error, {:unsupported_tracker_kind, kind}}
+
+  defp validate_linear_settings(%{kind: "linear", api_key: key}) when not is_binary(key),
+    do: {:error, :missing_linear_api_token}
+
+  defp validate_linear_settings(%{kind: "linear", project_slug: slug}) when not is_binary(slug),
+    do: {:error, :missing_linear_project_slug}
+
+  defp validate_linear_settings(_), do: :ok
+
+  defp validate_github_settings(%{kind: "github", repo: repo}) do
+    if SymphonyElixir.RepoId.valid?(repo), do: :ok, else: {:error, :missing_or_invalid_github_repo}
+  end
+
+  defp validate_github_settings(_), do: :ok
 
   defp format_config_error(reason) do
     case reason do
@@ -150,6 +156,9 @@ defmodule SymphonyElixir.Config do
 
       {:workflow_parse_error, raw_reason} ->
         "Failed to parse WORKFLOW.md: #{inspect(raw_reason)}"
+
+      {:invalid_external_config, path, raw_reason} ->
+        "Invalid runtime config at #{path}: #{inspect(raw_reason)}"
 
       :workflow_front_matter_not_a_map ->
         "Failed to parse WORKFLOW.md: workflow front matter must decode to a map"

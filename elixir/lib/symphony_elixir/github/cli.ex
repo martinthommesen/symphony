@@ -12,7 +12,7 @@ defmodule SymphonyElixir.GitHub.CLI do
   `:gh_cli_timeout_ms` and defaults to 15s.
   """
 
-  alias SymphonyElixir.Redaction
+  alias SymphonyElixir.{Redaction, StructuredLogger}
   alias SymphonyElixir.RepoId
 
   require Logger
@@ -71,19 +71,27 @@ defmodule SymphonyElixir.GitHub.CLI do
   def run(args) when is_list(args) do
     Enum.each(args, &validate_arg!/1)
 
-    case run_with_timeout(args, timeout_ms()) do
+    started_at = System.monotonic_time(:millisecond)
+    result = run_with_timeout(args, timeout_ms())
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    case result do
       {:ok, {output, 0}} ->
+        log_github_command(args, 0, output, duration_ms)
         {:ok, output}
 
       {:ok, {output, status}} ->
+        log_github_command(args, status, output, duration_ms)
         Logger.warning("gh #{summary(args)} exited #{status}: #{Redaction.redact(output)}")
         {:error, {:gh_exit, status, Redaction.redact(output)}}
 
       {:error, :timeout} ->
+        log_github_command(args, 124, "gh timed out after #{timeout_ms()}ms", duration_ms)
         Logger.warning("gh #{summary(args)} timed out after #{timeout_ms()}ms")
         {:error, :gh_timeout}
 
       {:error, {:runner_exit, reason}} ->
+        log_github_command(args, 125, "gh runner crashed: #{inspect(reason)}", duration_ms)
         Logger.warning("gh #{summary(args)} runner crashed: #{inspect(reason)}")
         {:error, {:gh_runner_exit, reason}}
     end
@@ -97,16 +105,23 @@ defmodule SymphonyElixir.GitHub.CLI do
   def run_lenient(args) when is_list(args) do
     Enum.each(args, &validate_arg!/1)
 
-    case run_with_timeout(args, timeout_ms()) do
+    started_at = System.monotonic_time(:millisecond)
+    result = run_with_timeout(args, timeout_ms())
+    duration_ms = System.monotonic_time(:millisecond) - started_at
+
+    case result do
       {:ok, {output, status}} ->
+        log_github_command(args, status, output, duration_ms)
         {status, Redaction.redact(output)}
 
       {:error, :timeout} ->
+        log_github_command(args, 124, "gh timed out after #{timeout_ms()}ms", duration_ms)
         Logger.warning("gh #{summary(args)} timed out after #{timeout_ms()}ms")
         # Mirror a non-zero exit so callers can branch on it.
         {124, Redaction.redact("gh timed out after #{timeout_ms()}ms")}
 
       {:error, {:runner_exit, reason}} ->
+        log_github_command(args, 125, "gh runner crashed: #{inspect(reason)}", duration_ms)
         Logger.warning("gh #{summary(args)} runner crashed: #{inspect(reason)}")
         # Distinguish from timeout via a different "exit code" so
         # callers that branch on it can tell apart a fast crash from
@@ -169,5 +184,22 @@ defmodule SymphonyElixir.GitHub.CLI do
     args
     |> Enum.take(3)
     |> Enum.join(" ")
+  end
+
+  defp log_github_command(args, status, output, duration_ms) do
+    StructuredLogger.log_named("github", %{
+      event_type: "github_cli_command",
+      severity: if(status == 0, do: "info", else: "error"),
+      message: "gh #{summary(args)} exited #{status}",
+      payload: %{
+        executable: "gh",
+        argv: Enum.map(args, &Redaction.redact/1),
+        exit_code: status,
+        duration_ms: duration_ms,
+        output: Redaction.redact(output)
+      }
+    })
+  rescue
+    _ -> :ok
   end
 end

@@ -76,7 +76,7 @@ export interface StatePayload {
   counts?: Record<string, number>;
   running?: RunningEntry[];
   retrying?: RetryEntry[];
-  codex_totals?: TokenTotals & { seconds_running?: number };
+  agent_totals?: TokenTotals & { seconds_running?: number };
   rate_limits?: unknown;
   polling?: PollingState;
   agent_capacity?: AgentCapacity;
