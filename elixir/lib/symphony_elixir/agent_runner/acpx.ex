@@ -78,32 +78,29 @@ defmodule SymphonyElixir.AgentRunner.Acpx do
     session_name = session.session_name
     worker_host = session.worker_host
 
-    prompt_path =
-      Path.join(System.tmp_dir!(), "symphony_prompt_#{System.unique_integer([:positive])}.md")
+    with {:ok, prompt_path, cleanup_prompt_file} <- prepare_prompt_file(session, prompt) do
+      try do
+        executable = CommandBuilder.executable()
+        argv = CommandBuilder.prompt(agent_id, workspace, session_name, prompt_path)
+        started_at = System.monotonic_time(:millisecond)
 
-    File.write!(prompt_path, prompt)
+        log_agent_run_start(session, executable, argv)
 
-    try do
-      executable = CommandBuilder.executable()
-      argv = CommandBuilder.prompt(agent_id, workspace, session_name, prompt_path)
-      started_at = System.monotonic_time(:millisecond)
+        case spawn_acpx(executable, argv, workspace, worker_host) do
+          {:ok, port} ->
+            wrapped_on_message = build_wrapped_on_message(port, on_message, session)
+            result = stream_output(port, agent_id, wrapped_on_message)
+            stop_port(port)
+            log_agent_run_finish(session, executable, argv, started_at, result)
+            result
 
-      log_agent_run_start(session, executable, argv)
-
-      case spawn_acpx(executable, argv, workspace, worker_host) do
-        {:ok, port} ->
-          wrapped_on_message = build_wrapped_on_message(port, on_message, session)
-          result = stream_output(port, agent_id, wrapped_on_message)
-          stop_port(port)
-          log_agent_run_finish(session, executable, argv, started_at, result)
-          result
-
-        {:error, reason} ->
-          log_agent_run_error(session, executable, argv, started_at, reason)
-          {:error, reason}
+          {:error, reason} ->
+            log_agent_run_error(session, executable, argv, started_at, reason)
+            {:error, reason}
+        end
+      after
+        cleanup_prompt_file.()
       end
-    after
-      File.rm(prompt_path)
     end
   end
 
@@ -139,6 +136,58 @@ defmodule SymphonyElixir.AgentRunner.Acpx do
   end
 
   # -- private --
+
+  defp prepare_prompt_file(%{worker_host: nil}, prompt) do
+    prompt_path =
+      Path.join(System.tmp_dir!(), "symphony_prompt_#{System.unique_integer([:positive])}.md")
+
+    File.write!(prompt_path, prompt)
+    {:ok, prompt_path, fn -> File.rm(prompt_path) end}
+  end
+
+  defp prepare_prompt_file(%{workspace: workspace, worker_host: worker_host}, prompt)
+       when is_binary(worker_host) do
+    alias SymphonyElixir.SSH
+
+    prompt_dir = Path.join([workspace, ".symphony", "tmp"])
+    prompt_path = Path.join(prompt_dir, "symphony_prompt_#{System.unique_integer([:positive])}.md")
+    delimiter = heredoc_delimiter(prompt)
+
+    command = """
+    mkdir -p #{shell_escape(prompt_dir)}
+    cat > #{shell_escape(prompt_path)} <<'#{delimiter}'
+    #{prompt}
+    #{delimiter}
+    """
+
+    case SSH.run(worker_host, command, stderr_to_stdout: true) do
+      {:ok, {_output, 0}} ->
+        {:ok, prompt_path, fn -> remove_remote_prompt_file(worker_host, prompt_path) end}
+
+      {:ok, {output, status}} ->
+        {:error, {:remote_prompt_write_failed, status, output}}
+
+      {:error, reason} ->
+        {:error, {:remote_prompt_write_failed, reason}}
+    end
+  end
+
+  defp remove_remote_prompt_file(worker_host, prompt_path) do
+    alias SymphonyElixir.SSH
+
+    _ = SSH.run(worker_host, "rm -f #{shell_escape(prompt_path)}", stderr_to_stdout: true)
+    :ok
+  end
+
+  defp heredoc_delimiter(prompt) do
+    delimiter = "__SYMPHONY_PROMPT_#{System.unique_integer([:positive])}__"
+
+    if String.contains?(prompt, delimiter) do
+      heredoc_delimiter(prompt)
+    else
+      delimiter
+    end
+  end
 
   defp spawn_acpx(executable, argv, workspace, nil) do
     bin = System.find_executable(executable)

@@ -419,6 +419,9 @@ defmodule SymphonyElixir.GitHub.Finalizer do
 
       {:error, {:gh_exit, _status, output}} ->
         {:error, {:pr_create_failed, output}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

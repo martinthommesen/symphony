@@ -6,12 +6,19 @@ defmodule SymphonyElixir.GitHubFinalizerConfigTest do
 
   setup do
     original_runner = Application.get_env(:symphony_elixir, :gh_runner)
+    original_timeout = Application.get_env(:symphony_elixir, :gh_cli_timeout_ms)
 
     on_exit(fn ->
       if is_nil(original_runner) do
         Application.delete_env(:symphony_elixir, :gh_runner)
       else
         Application.put_env(:symphony_elixir, :gh_runner, original_runner)
+      end
+
+      if is_nil(original_timeout) do
+        Application.delete_env(:symphony_elixir, :gh_cli_timeout_ms)
+      else
+        Application.put_env(:symphony_elixir, :gh_cli_timeout_ms, original_timeout)
       end
     end)
 
@@ -89,6 +96,48 @@ defmodule SymphonyElixir.GitHubFinalizerConfigTest do
     calls = Agent.get(gh_calls, & &1)
     refute Enum.any?(calls, &match?(["pr", _ | _], &1))
     assert Enum.any?(calls, &match?(["issue", "edit", "43", "--repo", "owner/name", "--add-label", "symphony/failed"], &1))
+  end
+
+  test "PR creation timeouts are returned instead of raising" do
+    workspace = git_workspace!()
+    File.write!(Path.join(workspace, "feature.txt"), "implemented\n")
+    write_github_workflow!(workspace, commit_strategy: "symphony_commits_all")
+    Application.put_env(:symphony_elixir, :gh_cli_timeout_ms, 1)
+
+    {:ok, gh_calls} = Agent.start_link(fn -> [] end)
+
+    Application.put_env(:symphony_elixir, :gh_runner, fn args, _opts ->
+      Agent.update(gh_calls, &(&1 ++ [args]))
+
+      case args do
+        ["api", "repos/owner/name", "--jq", ".default_branch"] ->
+          {"main\n", 0}
+
+        ["pr", "list" | _] ->
+          {"[]", 0}
+
+        ["pr", "create" | _] ->
+          Process.sleep(50)
+          {"", 0}
+
+        ["issue", "edit" | _] ->
+          {"", 0}
+
+        ["issue", "comment" | _] ->
+          {"", 0}
+
+        other ->
+          flunk("unexpected gh call: #{inspect(other)}")
+      end
+    end)
+
+    issue = issue(42, "Add feature")
+
+    assert {:error, :gh_timeout} =
+             Finalizer.finalize(issue, workspace, "run-timeout", "Done")
+
+    calls = Agent.get(gh_calls, & &1)
+    assert Enum.any?(calls, &match?(["pr", "create" | _], &1))
   end
 
   defp git_workspace! do
